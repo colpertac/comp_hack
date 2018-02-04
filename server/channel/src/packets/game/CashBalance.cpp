@@ -31,10 +31,6 @@
 #include <Packet.h>
 #include <PacketCodes.h>
 
-// object Includes
-#include <Account.h>
-#include <Character.h>
-
 // channel Includes
 #include "ChannelServer.h"
 
@@ -51,20 +47,8 @@ bool Parsers::CashBalance::Parse(libcomp::ManagerPacket *pPacketManager,
 
     auto server = std::dynamic_pointer_cast<ChannelServer>(pPacketManager->GetServer());
     auto client = std::dynamic_pointer_cast<ChannelClientConnection>(connection);
-    auto state = client->GetClientState();
-    auto cState = state->GetCharacterState();
-    auto character = cState->GetEntity();
 
-    // Always reload the account to get the latest CP value
-    auto account = libcomp::PersistentObject::LoadObjectByUUID<objects::Account>(
-        server->GetLobbyDatabase(), character->GetAccount().GetUUID(), true);
-
-    libcomp::Packet reply;
-    reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_CASH_BALANCE);
-    reply.WriteS32Little((int32_t)account->GetCP());
-    reply.WriteS32Little(0);
-
-    client->SendPacket(reply);
+    server->GetAccountManager()->SendCPBalance(client);
 
     return true;
 }
