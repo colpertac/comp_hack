@@ -49,10 +49,13 @@ bool Parsers::CompShopOpen::Parse(libcomp::ManagerPacket *pPacketManager,
         return false;
     }
 
-    auto server = std::dynamic_pointer_cast<ChannelServer>(pPacketManager->GetServer());
-    auto client = std::dynamic_pointer_cast<ChannelClientConnection>(connection);
+    auto server = std::dynamic_pointer_cast<ChannelServer>(
+        pPacketManager->GetServer());
+    auto client = std::dynamic_pointer_cast<ChannelClientConnection>(
+        connection);
 
-    server->GetEventManager()->HandleEvent(client, SVR_CONST.EVENT_MENU_COMP_SHOP, 0);
+    server->GetEventManager()->RequestMenu(client,
+        (int32_t)SVR_CONST.MENU_COMP_SHOP);
 
     // Resend the current CP balance
     server->GetAccountManager()->SendCPBalance(client);
