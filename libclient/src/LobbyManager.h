@@ -32,9 +32,22 @@
 #include <MessagePacket.h>
 #include <MessageQueue.h>
 
+namespace libcomp
+{
+
+namespace Message
+{
+
+class MessageClient;
+
+} // namespace Message
+
+} // namespace libcomp
+
 namespace packets
 {
     class PacketLobbyWorldList;
+    class PacketLobbyCharacterList;
 } // namespace packets
 
 namespace logic
@@ -75,12 +88,31 @@ namespace logic
          */
         bool ProcessMessage(const libcomp::Message::Message *pMessage) override;
 
+        /**
+         * Process a client message.
+         * @param pMessage Client message to process.
+         */
+        bool ProcessClientMessage(
+            const libcomp::Message::MessageClient *pMessage);
+
     private:
         /**
-         * Handle the incoming world list.
+         * Handle the incoming world list packet.
          * @returns true if the packet was parsed correctly; false otherwise.
          */
         bool HandlePacketLobbyWorldList(libcomp::ReadOnlyPacket &p);
+
+        /**
+         * Handle the incoming character list packet.
+         * @returns true if the packet was parsed correctly; false otherwise.
+         */
+        bool HandlePacketLobbyCharacterList(libcomp::ReadOnlyPacket &p);
+
+        /**
+         * Handle the incoming start game packet.
+         * @returns true if the packet was parsed correctly; false otherwise.
+         */
+        bool HandlePacketLobbyStartGame(libcomp::ReadOnlyPacket &p);
 
         /**
          * Process a packet message.
@@ -89,7 +121,7 @@ namespace logic
         bool ProcessPacketMessage(const libcomp::Message::Packet *pMessage);
 
         /// Pointer to the LogicWorker.
-        /// LogicWorker *mLogicWorker;
+        LogicWorker *mLogicWorker;
 
         /// Message queue for the LogicWorker.
         std::weak_ptr<libcomp::MessageQueue<libcomp::Message::Message *>>
@@ -97,6 +129,9 @@ namespace logic
 
         /// List of the worlds and channels.
         std::shared_ptr<packets::PacketLobbyWorldList> mWorldList;
+
+        ///List of the characters.
+        std::shared_ptr<packets::PacketLobbyCharacterList> mCharacterList;
     };
 
 } // namespace logic

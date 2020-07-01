@@ -33,6 +33,13 @@
 // libclient Includes
 #include <ClientManager.h>
 
+namespace packets
+{
+
+class PacketLobbyCharacterList;
+
+} // namespace packets
+
 namespace game
 {
 
@@ -73,10 +80,35 @@ protected:
     void closeEvent(QCloseEvent *pEvent) override;
 
 private slots:
+    /**
+     * Update the UI after selecting a character.
+     */
+    void selectionChanged();
+
+    /**
+     * Start game button was clicked.
+     */
+    void startGame();
 
 private:
+    /**
+     * Handle Character List Update message.
+     * @param pMessage Client message to process.
+     */
+    bool HandleCharacterListUpdate(const libcomp::Message::MessageClient *pMessage);
+
+    /**
+     * Handle the authentication reply.
+     * @param pMessage Client message to process.
+     */
+    bool HandleConnectedToChannel(
+        const libcomp::Message::MessageClient *pMessage);
+
     /// Pointer to the GameWorker.
     GameWorker *mGameWorker;
+
+    /// Character list data.
+    std::shared_ptr<packets::PacketLobbyCharacterList> mCharacterList;
 
     /// UI for this scene.
     Ui::LobbyScene ui;
