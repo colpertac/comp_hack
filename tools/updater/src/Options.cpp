@@ -32,6 +32,7 @@
 
 // Ignore warnings
 #include <PushIgnore.h>
+#include <cstring>
 
 #include <QDir>
 #include <QFile>

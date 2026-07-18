@@ -28,6 +28,7 @@
 
 // libcomp Includes
 #include <Log.h>
+#include <cstring>
 
 // object Includes
 #include <Character.h>

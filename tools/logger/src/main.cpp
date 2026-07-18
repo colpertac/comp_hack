@@ -26,6 +26,7 @@
 
 // Standard C++ Includes
 #include <iostream>
+#include <cstring>
 
 // Ignore warnings
 #include <PushIgnore.h>

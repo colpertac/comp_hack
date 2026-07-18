@@ -26,6 +26,7 @@
 
 // Ignore Warnings
 #include <PushIgnore.h>
+#include <cstring>
 
 #include <QActionGroup>
 #include <QClipboard>

@@ -34,6 +34,7 @@
 // Standard C Includes
 #include <cstdlib>
 #include <ctime>
+#include <cstring>
 
 // Standard C++ Includes
 #include <array>

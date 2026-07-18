@@ -32,6 +32,7 @@
 
 // libcomp Includes
 #include <Log.h>
+#include <cstring>
 #include <PacketCodes.h>
 
 // object Includes

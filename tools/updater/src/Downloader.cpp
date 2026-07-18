@@ -28,6 +28,7 @@
 
 // Ignore warnings
 #include <PushIgnore.h>
+#include <cstring>
 
 // Qt Includes
 #include <QCoreApplication>

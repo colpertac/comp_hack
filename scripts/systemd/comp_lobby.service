@@ -1,0 +1,15 @@
+[Unit]
+Description=COMP_hack Lobby Server
+After=network.target
+
+[Service]
+Type=notify
+User=comphack
+Group=comphack
+WorkingDirectory=/var/lib/comp_hack
+ExecStart=/usr/local/bin/comp_lobby
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

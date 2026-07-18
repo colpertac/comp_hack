@@ -1,0 +1,16 @@
+[Unit]
+Description=COMP_hack World Server
+Requires=comp_lobby.service
+After=comp_lobby.service
+
+[Service]
+Type=notify
+User=comphack
+Group=comphack
+WorkingDirectory=/var/lib/comp_hack
+ExecStart=/usr/local/bin/comp_world
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

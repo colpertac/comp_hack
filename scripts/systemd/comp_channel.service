@@ -1,0 +1,16 @@
+[Unit]
+Description=COMP_hack Channel Server
+Requires=comp_world.service
+After=comp_world.service
+
+[Service]
+Type=notify
+User=comphack
+Group=comphack
+WorkingDirectory=/var/lib/comp_hack
+ExecStart=/usr/local/bin/comp_channel
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

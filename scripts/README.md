@@ -1,0 +1,94 @@
+# COMP_hack local + systemd helper scripts
+
+These scripts automate the setup that got the Wyrd Linux build running on modern Debian.
+
+## Quick start (local, no systemd)
+
+```bash
+cd /home/cat/repos/smt/comp_hack
+
+# 1) Build lobby/world/channel
+./scripts/build.sh
+
+# 2) Install config + datastore + client BinaryData/QMP
+./scripts/setup.sh
+
+# 3) Start servers (lobby -> world -> channel)
+./scripts/start.sh
+
+# Status / stop
+./scripts/status.sh
+./scripts/stop.sh
+```
+
+Default client path used by `setup.sh`:
+
+```text
+/home/cat/software/smt/game/reimagine
+```
+
+Override if needed:
+
+```bash
+CLIENT_DIR=/path/to/client ./scripts/setup.sh
+EXTERNAL_IP=127.0.0.1 ./scripts/setup.sh
+```
+
+## Paths
+
+| Path | Purpose |
+|------|---------|
+| `build-current/bin/comp_*` | Built binaries |
+| `/etc/comp_hack/` | Config + `constants.xml` |
+| `/var/lib/comp_hack/datastore` | Server content + client BinaryData/QMP |
+| `/var/lib/comp_hack/database` | SQLite databases |
+| `/var/log/comp_hack/` | Server log files |
+| `.run/` | Local pid files / stdout captures |
+
+## Optional: systemd (boot + auto-restart)
+
+Do this only after local start works. Stop local processes first.
+
+```bash
+./scripts/stop.sh
+sudo ./scripts/install-systemd.sh
+
+sudo systemctl start comp_lobby
+sudo systemctl start comp_world
+sudo systemctl start comp_channel
+
+sudo systemctl status comp_channel
+sudo journalctl -u comp_lobby -u comp_world -u comp_channel -f
+```
+
+Uninstall units:
+
+```bash
+sudo ./scripts/uninstall-systemd.sh
+```
+
+## Rebuild notes
+
+`build.sh` already uses:
+
+```bash
+cmake -S . -B build-current \
+  -DNO_WARNINGS=ON \
+  -DDISABLE_TESTING=ON \
+  -DUSE_SYSTEM_ZLIB=ON \
+  -DUSE_SYSTEM_OPENSSL=ON \
+  -DUSE_SYSTEM_PHYSFS=ON \
+  -DUSE_SYSTEM_MARIADB=ON
+```
+
+and applies the known modern-distro workarounds (squirrel headers, civet/squirrel library name symlinks, googletest GCC 14 patch).
+
+Force a clean reconfigure:
+
+```bash
+RECONFIGURE=1 ./scripts/build.sh
+```
+
+## Warnings you may still see
+
+Missing spot files / one missing QMP / duplicate mapping warnings are usually incomplete or unused client assets. If you can log in and play, they are not blockers.

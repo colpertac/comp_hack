@@ -29,6 +29,7 @@
 
 // libcomp Includes
 #include <Crypto.h>
+#include <cstring>
 
 // Ignore warnings
 #include <PushIgnore.h>

@@ -28,6 +28,7 @@
 
 // libcomp Includes
 #include <MessagePacket.h>
+#include <cstring>
 
 using namespace libtester;
 

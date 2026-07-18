@@ -24,6 +24,7 @@
 
 // Standard C++11 Includes
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 

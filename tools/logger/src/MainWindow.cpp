@@ -30,6 +30,7 @@
 
 // libcomp Includes
 #include <Crypto.h>
+#include <cstring>
 #include <PEFile.h>
 
 // Ignore warnings

@@ -28,6 +28,7 @@
 
 // libcomp Includes
 #include <AccountManager.h>
+#include <cstring>
 #include <BaseServer.h>
 #include <CString.h>
 #include <Crypto.h>
