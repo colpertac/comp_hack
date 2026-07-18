@@ -78,9 +78,14 @@ IF(GIT_FOUND)
       OUTPUT_STRIP_TRAILING_WHITESPACE
     )
 
-    # Use the first one in the list.
-    STRING(REPLACE "\n" ";" GIT_REMOTE "${GIT_REMOTE}")
-    LIST(GET GIT_REMOTE 0 GIT_REMOTE)
+    # Use the first one in the list. A local-only checkout may intentionally
+    # have no remotes, so do not attempt to read an empty list.
+    IF(GIT_REMOTE)
+      STRING(REPLACE "\n" ";" GIT_REMOTE "${GIT_REMOTE}")
+      LIST(GET GIT_REMOTE 0 GIT_REMOTE)
+    ELSE()
+      SET(GIT_REMOTE "none")
+    ENDIF()
 
     # Get the symbolic ref for HEAD
     EXECUTE_PROCESS(
@@ -108,12 +113,16 @@ IF(GIT_FOUND)
     ENDIF()
 
     # Get the remote URL.
-    EXECUTE_PROCESS(
-      COMMAND ${GIT_EXECUTABLE} remote get-url "${GIT_REMOTE}"
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-      OUTPUT_VARIABLE GIT_REMOTE_URL
-      OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
+    IF("none" STREQUAL GIT_REMOTE)
+      SET(GIT_REMOTE_URL "local-only")
+    ELSE()
+      EXECUTE_PROCESS(
+        COMMAND ${GIT_EXECUTABLE} remote get-url "${GIT_REMOTE}"
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_REMOTE_URL
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+      )
+    ENDIF()
 
     SET(GIT_BRANCH "R\"_c_esc_(${GIT_BRANCH})_c_esc_\"")
     SET(GIT_COMMITTISH "R\"_c_esc_(${GIT_COMMITTISH})_c_esc_\"")
