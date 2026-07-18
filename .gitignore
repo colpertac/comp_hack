@@ -7,6 +7,7 @@ deps/libcomp/
 binaries/
 binaries32/
 binaries64/
+.run/
 
 *.sublime-project
 
