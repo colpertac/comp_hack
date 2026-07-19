@@ -39,7 +39,7 @@ EXTERNAL_IP=127.0.0.1 ./scripts/setup.sh
 | Path | Purpose |
 |------|---------|
 | `build-current/bin/comp_*` | Built binaries |
-| `/etc/comp_hack/` | Config + `constants.xml` |
+| `/etc/comp_hack/` | Config, `constants.xml`, and `newcharacter.xml` |
 | `/var/lib/comp_hack/datastore` | Server content + client BinaryData/QMP |
 | `/var/lib/comp_hack/database` | SQLite databases |
 | `/var/log/comp_hack/` | Server log files |
@@ -88,6 +88,13 @@ Force a clean reconfigure:
 ```bash
 RECONFIGURE=1 ./scripts/build.sh
 ```
+
+## Config notes
+
+`setup.sh` installs `contrib/winconfig/newcharacter.xml` as
+`/etc/comp_hack/newcharacter.xml`. That file grants starting skills such as
+Rest, Summon, and Basic Attack. Without it, new characters cannot sit, summon,
+or use the basic skill bar even though the channel still starts.
 
 ## Warnings you may still see
 

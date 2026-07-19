@@ -44,6 +44,10 @@ install_config_file "${ROOT_DIR}/contrib/nixconfig/world.xml" "${CONFIG_DIR}/wor
 install_config_file "${ROOT_DIR}/contrib/nixconfig/channel.xml" "${CONFIG_DIR}/channel.xml"
 install_config_file "${ROOT_DIR}/contrib/nixconfig/setup.xml" "${CONFIG_DIR}/setup.xml"
 install_config_file "${ROOT_DIR}/contrib/testing/config/constants.xml" "${CONFIG_DIR}/constants.xml"
+# Starting skills (Rest/Summon/Basic Attack/etc). Without this, new characters
+# cannot sit, summon, or use the basic skill bar.
+install_config_file "${ROOT_DIR}/contrib/winconfig/newcharacter.xml" \
+  "${CONFIG_DIR}/newcharacter.xml"
 
 if ! grep -q 'ExternalIP' "${CONFIG_DIR}/channel.xml"; then
   # Insert ExternalIP before closing </object>
