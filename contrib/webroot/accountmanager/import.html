@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Import Account</title>
+  <style>
+    body {
+      font-family: "Trebuchet MS", sans-serif;
+      background: #0e0e0e;
+      color: #ddd;
+      margin: 2rem;
+    }
+    form {
+      max-width: 32rem;
+      padding: 1rem;
+      border: 1px solid #333;
+      background: #1a1a1a;
+    }
+    input[type="submit"] {
+      margin-top: 0.75rem;
+    }
+    .note {
+      margin-top: 1rem;
+      font-size: 0.85rem;
+      color: #888;
+      max-width: 36rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>Import Account</h1>
+  <!--
+    Posts to the lobby Civet handler (same host:port as this page, usually :10999).
+    Relative /import avoids hard-coding 127.0.0.1 — no sed of the HTML needed.
+  -->
+  <form action="/import" method="post" enctype="multipart/form-data">
+    <label for="accountToImport">Account export XML</label><br />
+    <input
+      type="file"
+      name="accountToImport"
+      id="accountToImport"
+      accept=".xml,application/xml,text/xml"
+      required
+    />
+    <br />
+    <input type="submit" value="Import Account" name="submit" />
+  </form>
+  <p class="note">
+    Requires lobby <code>AllowImport</code> (default true) and that port 10999 is
+    only reachable by operators. Prefer the website
+    <code>/admin/import</code> page (admin session) when using the Phase 16 portal.
+  </p>
+</body>
+</html>
