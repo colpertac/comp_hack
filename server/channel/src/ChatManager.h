@@ -179,6 +179,17 @@ class ChatManager {
       const std::list<libcomp::String>& args);
 
   /**
+   * GM command to scrap every unequipped inventory item (keeps gear
+   * that is currently equipped, including COMP).
+   * @param client Pointer to the client that sent the command
+   * @param args Unused
+   * @return true if the command was handled properly, else false
+   */
+  bool GMCommand_ClearInventory(
+      const std::shared_ptr<channel::ChannelClientConnection>& client,
+      const std::list<libcomp::String>& args);
+
+  /**
    * GM command to set the total casino coins the character has
    * @param client Pointer to the client that sent the command
    * @param args List of arguments for the command
@@ -195,6 +206,29 @@ class ChatManager {
    * @return true if the command was handled properly, else false
    */
   bool GMCommand_Contract(
+      const std::shared_ptr<channel::ChannelClientConnection>& client,
+      const std::list<libcomp::String>& args);
+
+  /**
+   * GM command to copy another character's appearance + EquippedVA onto
+   * the live GM character (RAM + packets). Does not copy gender.
+   * When the source has no VA, also runs @copygear as a fallback.
+   * @param client Pointer to the client that sent the command
+   * @param args List of arguments for the command
+   * @return true if the command was handled properly, else false
+   */
+  bool GMCommand_CopyLook(
+      const std::shared_ptr<channel::ChannelClientConnection>& client,
+      const std::list<libcomp::String>& args);
+
+  /**
+   * GM command to copy another character's real EquippedItems Types onto
+   * the live mannequin (generate + equip). Skips COMP. Does not copy gender.
+   * @param client Pointer to the client that sent the command
+   * @param args List of arguments for the command
+   * @return true if the command was handled properly, else false
+   */
+  bool GMCommand_CopyGear(
       const std::shared_ptr<channel::ChannelClientConnection>& client,
       const std::list<libcomp::String>& args);
 
@@ -226,6 +260,17 @@ class ChatManager {
    * @return true if the command was handled properly, else false
    */
   bool GMCommand_Crash(
+      const std::shared_ptr<channel::ChannelClientConnection>& client,
+      const std::list<libcomp::String>& args);
+
+  /**
+   * GM command to equip a cheap dummy weapon matching EquippedVA slot 24's
+   * item subCategory (studio / armory mannequin).
+   * @param client Pointer to the client that sent the command
+   * @param args Unused
+   * @return true if the command was handled properly, else false
+   */
+  bool GMCommand_DummyWeapon(
       const std::shared_ptr<channel::ChannelClientConnection>& client,
       const std::list<libcomp::String>& args);
 
@@ -384,6 +429,18 @@ class ChatManager {
       const std::list<libcomp::String>& args);
 
   /**
+   * GM command to toggle session invulnerability (@invuln / @god).
+   * Ignores HP reductions for character and summoned demon until toggled off
+   * or the session ends. Requires GM_CMD_LVL_INVULN.
+   * @param client Pointer to the client that sent the command
+   * @param args Optional 0/1; omit to toggle
+   * @return true if the command was handled properly, else false
+   */
+  bool GMCommand_Invuln(
+      const std::shared_ptr<channel::ChannelClientConnection>& client,
+      const std::list<libcomp::String>& args);
+
+  /**
    * GM command to add an item to a character's inventory.
    * @param client Pointer to the client that sent the command
    * @param args List of arguments for the command
@@ -502,6 +559,17 @@ class ChatManager {
    * @return true if the command was handled properly, else false
    */
   bool GMCommand_Quest(
+      const std::shared_ptr<channel::ChannelClientConnection>& client,
+      const std::list<libcomp::String>& args);
+
+  /**
+   * GM command to resend character appearance packets from channel RAM
+   * (does not reload SQLite).
+   * @param client Pointer to the client that sent the command
+   * @param args List of arguments for the command
+   * @return true if the command was handled properly, else false
+   */
+  bool GMCommand_ReloadChar(
       const std::shared_ptr<channel::ChannelClientConnection>& client,
       const std::list<libcomp::String>& args);
 
@@ -664,6 +732,17 @@ class ChatManager {
       const std::list<libcomp::String>& args);
 
   /**
+   * GM command to set or clear EquippedVA on the live character (RAM),
+   * send PACKET_VA_CHANGE / PACKET_VA_CHANGED, and queue a DB save.
+   * @param client Pointer to the client that sent the command
+   * @param args List of arguments for the command
+   * @return true if the command was handled properly, else false
+   */
+  bool GMCommand_VA(
+      const std::shared_ptr<channel::ChannelClientConnection>& client,
+      const std::list<libcomp::String>& args);
+
+  /**
    * GM command to set a character's current valuables.
    * @param client Pointer to the client that sent the command
    * @param args List of arguments for the command
@@ -723,6 +802,28 @@ class ChatManager {
   bool GMCommand_XP(
       const std::shared_ptr<channel::ChannelClientConnection>& client,
       const std::list<libcomp::String>& args);
+
+  /**
+   * Equip a cheap dummy weapon whose ItemData subCategory matches
+   * EquippedVA slot 24. Used by @dummyweapon and @copylook.
+   * @param client Live mannequin client
+   * @param quietIfNoVA If true, skip chat when there is no weapon VA
+   * @return true (always handled; errors are chat messages)
+   */
+  bool EquipStudioDummyWeapon(
+      const std::shared_ptr<channel::ChannelClientConnection>& client,
+      bool quietIfNoVA);
+
+  /**
+   * Copy source character's EquippedItems Types onto the live mannequin.
+   * Skips COMP. Used by @copygear and @copylook (no-VA fallback).
+   * @param client Live mannequin client
+   * @param source Character to copy gear Types from
+   * @return true (always handled; errors are chat messages)
+   */
+  bool CopyStudioGear(
+      const std::shared_ptr<channel::ChannelClientConnection>& client,
+      const std::shared_ptr<objects::Character>& source);
 
   /**
    * Determine if the client has appropriate user level necessary

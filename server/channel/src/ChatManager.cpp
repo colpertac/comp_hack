@@ -27,9 +27,11 @@
 #include "ChatManager.h"
 
 // libcomp Includes
+#include <Constants.h>
 #include <DefinitionManager.h>
 #include <Git.h>
 #include <Log.h>
+#include <Packet.h>
 #include <PacketCodes.h>
 #include <ServerConstants.h>
 #include <ServerDataManager.h>
@@ -53,6 +55,7 @@
 #include <InstanceAccess.h>
 #include <Item.h>
 #include <ItemBox.h>
+#include <MiCategoryData.h>
 #include <MiDevilData.h>
 #include <MiDevilLVUpRateData.h>
 #include <MiItemBasicData.h>
@@ -72,6 +75,7 @@
 #include <Team.h>
 
 // Standard C Includes
+#include <array>
 #include <cmath>
 #include <cstdlib>
 
@@ -97,11 +101,17 @@ ChatManager::ChatManager(const std::weak_ptr<ChannelServer>& server)
   mGMands["ban"] = &ChatManager::GMCommand_Ban;
   mGMands["bethel"] = &ChatManager::GMCommand_Bethel;
   mGMands["bp"] = &ChatManager::GMCommand_BattlePoints;
+  mGMands["clearinventory"] = &ChatManager::GMCommand_ClearInventory;
+  mGMands["clearinv"] = &ChatManager::GMCommand_ClearInventory;
   mGMands["coin"] = &ChatManager::GMCommand_Coin;
   mGMands["contract"] = &ChatManager::GMCommand_Contract;
+  mGMands["copygear"] = &ChatManager::GMCommand_CopyGear;
+  mGMands["copylook"] = &ChatManager::GMCommand_CopyLook;
   mGMands["counter"] = &ChatManager::GMCommand_Counter;
   mGMands["cowrie"] = &ChatManager::GMCommand_Cowrie;
   mGMands["crash"] = &ChatManager::GMCommand_Crash;
+  mGMands["dummyweapon"] = &ChatManager::GMCommand_DummyWeapon;
+  mGMands["dummywep"] = &ChatManager::GMCommand_DummyWeapon;
   mGMands["dxp"] = &ChatManager::GMCommand_DigitalizePoints;
   mGMands["effect"] = &ChatManager::GMCommand_Effect;
   mGMands["enchant"] = &ChatManager::GMCommand_Enchant;
@@ -117,6 +127,8 @@ ChatManager::ChatManager(const std::weak_ptr<ChannelServer>& server)
   mGMands["help"] = &ChatManager::GMCommand_Help;
   mGMands["homepoint"] = &ChatManager::GMCommand_Homepoint;
   mGMands["instance"] = &ChatManager::GMCommand_Instance;
+  mGMands["invuln"] = &ChatManager::GMCommand_Invuln;
+  mGMands["god"] = &ChatManager::GMCommand_Invuln;
   mGMands["item"] = &ChatManager::GMCommand_Item;
   mGMands["kick"] = &ChatManager::GMCommand_Kick;
   mGMands["levelup"] = &ChatManager::GMCommand_LevelUp;
@@ -129,6 +141,7 @@ ChatManager::ChatManager(const std::weak_ptr<ChannelServer>& server)
   mGMands["pos"] = &ChatManager::GMCommand_Position;
   mGMands["post"] = &ChatManager::GMCommand_Post;
   mGMands["quest"] = &ChatManager::GMCommand_Quest;
+  mGMands["reloadchar"] = &ChatManager::GMCommand_ReloadChar;
   mGMands["reported"] = &ChatManager::GMCommand_Reported;
   mGMands["resolve"] = &ChatManager::GMCommand_Resolve;
   mGMands["reunion"] = &ChatManager::GMCommand_Reunion;
@@ -144,6 +157,7 @@ ChatManager::ChatManager(const std::weak_ptr<ChannelServer>& server)
   mGMands["tickermessage"] = &ChatManager::GMCommand_TickerMessage;
   mGMands["title"] = &ChatManager::GMCommand_Title;
   mGMands["tokusei"] = &ChatManager::GMCommand_Tokusei;
+  mGMands["va"] = &ChatManager::GMCommand_VA;
   mGMands["valuable"] = &ChatManager::GMCommand_Valuable;
   mGMands["version"] = &ChatManager::GMCommand_Version;
   mGMands["worldtime"] = &ChatManager::GMCommand_WorldTime;
@@ -796,6 +810,61 @@ bool ChatManager::GMCommand_Bethel(
   return false;
 }
 
+bool ChatManager::GMCommand_ClearInventory(
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    const std::list<libcomp::String>& args) {
+  (void)args;
+  if (!HaveUserLevel(client, SVR_CONST.GM_CMD_LVL_SCRAP)) {
+    return true;
+  }
+
+  auto character = client->GetClientState()->GetCharacterState()->GetEntity();
+  auto inventory = character ? character->GetItemBoxes(0).Get() : nullptr;
+  if (!inventory) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "@clearinventory failed: no inventory");
+  }
+
+  std::list<std::shared_ptr<objects::Item>> insertItems;
+  std::unordered_map<std::shared_ptr<objects::Item>, uint16_t> stackAdjust;
+  uint32_t scrapped = 0;
+  for (size_t i = 0; i < 50; i++) {
+    auto item = inventory->GetItems(i).Get();
+    if (!item) {
+      continue;
+    }
+    bool equipped = false;
+    for (size_t e = 0; e < 15; e++) {
+      if (character->GetEquippedItems(e).Get() == item) {
+        equipped = true;
+        break;
+      }
+    }
+    if (equipped) {
+      continue;
+    }
+    stackAdjust[item] = 0;
+    scrapped++;
+  }
+
+  if (!scrapped) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "@clearinventory: nothing to scrap (equipped "
+                           "items kept)");
+  }
+
+  if (!mServer.lock()->GetCharacterManager()->UpdateItems(
+          client, false, insertItems, stackAdjust)) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "@clearinventory failed");
+  }
+
+  return SendChatMessage(
+      client, ChatType_t::CHAT_SELF,
+      libcomp::String("@clearinventory: scrapped %1 unequipped item(s)")
+          .Arg(scrapped));
+}
+
 bool ChatManager::GMCommand_Coin(
     const std::shared_ptr<channel::ChannelClientConnection>& client,
     const std::list<libcomp::String>& args) {
@@ -869,6 +938,421 @@ bool ChatManager::GMCommand_Contract(
       characterManager->ContractDemon(client, devilData, 0, MAX_FAMILIARITY);
   return demon != nullptr || SendChatMessage(client, ChatType_t::CHAT_SELF,
                                              "Demon could not be contracted");
+}
+
+bool ChatManager::GMCommand_CopyLook(
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    const std::list<libcomp::String>& args) {
+  if (!HaveUserLevel(client, SVR_CONST.GM_CMD_LVL_ITEM)) {
+    return true;
+  }
+
+  std::list<libcomp::String> argsCopy = args;
+  libcomp::String srcName;
+  if (!GetStringArg(srcName, argsCopy) || srcName.IsEmpty()) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "Usage: @copylook NAME");
+  }
+
+  auto server = mServer.lock();
+  auto state = client->GetClientState();
+  auto cState = state->GetCharacterState();
+  auto dest = cState->GetEntity();
+  if (!dest) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "@copylook failed: no character");
+  }
+
+  std::shared_ptr<objects::Character> dbChar;
+  std::shared_ptr<objects::Account> dbAcct;
+  std::shared_ptr<ChannelClientConnection> srcClient;
+  if (!GetTargetCharacterAccount(srcName, true, dbChar, dbAcct, srcClient)) {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String("@copylook: unknown character '%1'").Arg(srcName));
+  }
+
+  std::shared_ptr<objects::Character> source;
+  const char* srcKind = "sqlite";
+  if (srcClient) {
+    auto srcState = srcClient->GetClientState();
+    auto srcCState = srcState ? srcState->GetCharacterState() : nullptr;
+    source = srcCState ? srcCState->GetEntity() : nullptr;
+    srcKind = "live RAM";
+  }
+  if (!source) {
+    source = dbChar;
+    srcKind = "sqlite";
+  }
+  if (!source) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "@copylook failed: could not load source");
+  }
+
+  if (source->GetGender() != dest->GetGender()) {
+    auto genderName = [](objects::Character::Gender_t g) {
+      return g == objects::Character::Gender_t::FEMALE ? "female" : "male";
+    };
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String(
+            "@copylook refused: '%1' is %2, you are %3. Gender is "
+            "not copied — use the matching mannequin.")
+            .Arg(source->GetName())
+            .Arg(genderName(source->GetGender()))
+            .Arg(genderName(dest->GetGender())));
+  }
+
+  dest->SetSkinType(source->GetSkinType());
+  dest->SetHairType(source->GetHairType());
+  dest->SetFaceType(source->GetFaceType());
+  dest->SetEyeType(source->GetEyeType());
+  dest->SetHairColor(source->GetHairColor());
+  dest->SetLeftEyeColor(source->GetLeftEyeColor());
+  dest->SetRightEyeColor(source->GetRightEyeColor());
+
+  auto writeAppearance = [&](libcomp::Packet& pkt) {
+    pkt.WriteU8(dest->GetSkinType());
+    pkt.WriteU8(dest->GetHairType());
+    pkt.WriteU8(dest->GetEyeType());
+    pkt.WriteU8(dest->GetFaceType());
+    pkt.WriteU8(dest->GetLeftEyeColor());
+    pkt.WriteU8(0);
+    pkt.WriteU8(0);
+    pkt.WriteU8(dest->GetHairColor());
+    pkt.WriteU8(dest->GetRightEyeColor());
+  };
+
+  libcomp::Packet reply;
+  reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_APPEARANCE_ALTER);
+  reply.WriteS32Little(0);
+  writeAppearance(reply);
+  client->QueuePacket(reply);
+
+  libcomp::Packet notify;
+  notify.WritePacketCode(
+      ChannelToClientPacketCode_t::PACKET_APPEARANCE_ALTERED);
+  notify.WriteS32Little(cState->GetEntityID());
+  writeAppearance(notify);
+  server->GetZoneManager()->BroadcastPacket(client, notify, false);
+
+  std::list<std::pair<int8_t, uint32_t>> changeMap;
+  for (uint8_t i = 0; i <= MAX_VA_INDEX; i++) {
+    uint32_t srcVA = source->GetEquippedVA(i);
+    uint32_t dstVA = dest->GetEquippedVA(i);
+    if (srcVA == dstVA) {
+      continue;
+    }
+    uint32_t packed = srcVA ? srcVA : static_cast<uint32_t>(-1);
+    changeMap.push_back(std::pair<int8_t, uint32_t>((int8_t)i, packed));
+    if (srcVA) {
+      dest->SetEquippedVA(i, srcVA);
+    } else {
+      dest->RemoveEquippedVA(i);
+    }
+  }
+
+  if (!changeMap.empty()) {
+    libcomp::Packet vaReply;
+    vaReply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_VA_CHANGE);
+    vaReply.WriteS32Little(0);
+    vaReply.WriteS32Little(0);
+
+    libcomp::Packet vaNotify;
+    vaNotify.WritePacketCode(ChannelToClientPacketCode_t::PACKET_VA_CHANGED);
+    vaNotify.WriteS32Little(cState->GetEntityID());
+
+    vaReply.WriteS32Little((int32_t)changeMap.size());
+    vaNotify.WriteS32Little((int32_t)changeMap.size());
+    for (auto pair : changeMap) {
+      vaReply.WriteS8(pair.first);
+      vaReply.WriteS32Little((int32_t)pair.second);
+      vaNotify.WriteS8(pair.first);
+      vaNotify.WriteS32Little((int32_t)pair.second);
+    }
+
+    client->QueuePacket(vaReply);
+    server->GetZoneManager()->BroadcastPacket(client, vaNotify, false);
+  }
+
+  client->FlushOutgoing();
+  server->GetWorldDatabase()->QueueUpdate(dest, state->GetAccountUID());
+
+  auto zone = cState->GetZone();
+  if (zone) {
+    auto others = server->GetZoneManager()->GetZoneConnections(client, false);
+    if (!others.empty()) {
+      server->GetCharacterManager()->SendOtherCharacterData(others, state);
+    }
+    server->GetZoneManager()->ShowEntityToZone(zone, cState->GetEntityID());
+  }
+
+  SendChatMessage(
+      client, ChatType_t::CHAT_SELF,
+      libcomp::String("@copylook %1 → %2 (%3): skin=%4 hair=%5/%6 face=%7 "
+                      "eye=%8/%9/%10")
+          .Arg(source->GetName())
+          .Arg(dest->GetName())
+          .Arg(srcKind)
+          .Arg(dest->GetSkinType())
+          .Arg(dest->GetHairType())
+          .Arg(dest->GetHairColor())
+          .Arg(dest->GetFaceType())
+          .Arg(dest->GetEyeType())
+          .Arg(dest->GetLeftEyeColor())
+          .Arg(dest->GetRightEyeColor()));
+
+  bool anyVA = false;
+  for (uint8_t i = 0; i <= MAX_VA_INDEX; i++) {
+    if (source->GetEquippedVA(i)) {
+      anyVA = true;
+      break;
+    }
+  }
+  if (!anyVA) {
+    SendChatMessage(client, ChatType_t::CHAT_SELF,
+                    "@copylook: source has no VA — falling back to "
+                    "@copygear for real EquippedItems.");
+    CopyStudioGear(client, source);
+  } else {
+    EquipStudioDummyWeapon(client, true);
+  }
+
+  return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                         "@copylook applied (RAM + packets). Run on the "
+                         "mannequin, not live cat/catm.");
+}
+
+bool ChatManager::CopyStudioGear(
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    const std::shared_ptr<objects::Character>& source) {
+  auto server = mServer.lock();
+  auto state = client->GetClientState();
+  auto characterManager = server->GetCharacterManager();
+  auto definitionManager = server->GetDefinitionManager();
+  auto worldDB = server->GetWorldDatabase();
+  auto dest = state->GetCharacterState()->GetEntity();
+  auto inventory = dest ? dest->GetItemBoxes(0).Get() : nullptr;
+  if (!dest || !inventory || !source) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "@copygear failed: no character/inventory");
+  }
+
+  const size_t COMP_SLOT =
+      (size_t)objects::MiItemBasicData::EquipType_t::EQUIP_TYPE_COMP;
+
+  // Desired Type per equip slot (skip COMP). 0 = unequip.
+  std::array<uint32_t, 15> want{};
+  uint32_t slotsWithGear = 0;
+  for (size_t i = 0; i < 15; i++) {
+    if (i == COMP_SLOT) {
+      continue;
+    }
+    auto ref = source->GetEquippedItems(i);
+    if (ref.IsNull()) {
+      continue;
+    }
+    auto item = ref.Get();
+    if (!item) {
+      item = ref.Get(worldDB);
+    }
+    if (!item) {
+      item = libcomp::PersistentObject::LoadObjectByUUID<objects::Item>(
+          worldDB, ref.GetUUID());
+    }
+    if (!item) {
+      continue;
+    }
+    want[i] = item->GetType();
+    if (want[i]) {
+      slotsWithGear++;
+    }
+  }
+
+  // Unequip dest slots that will change (never COMP).
+  for (size_t i = 0; i < 15; i++) {
+    if (i == COMP_SLOT) {
+      continue;
+    }
+    auto cur = dest->GetEquippedItems(i).Get();
+    if (!cur) {
+      continue;
+    }
+    if (want[i] && cur->GetType() == want[i]) {
+      continue;
+    }
+    characterManager->UnequipItem(client, cur);
+  }
+
+  // Free bag space: scrap unequipped junk (keeps remaining equipped + COMP).
+  {
+    std::list<std::shared_ptr<objects::Item>> insertItems;
+    std::unordered_map<std::shared_ptr<objects::Item>, uint16_t> scrap;
+    for (size_t i = 0; i < 50; i++) {
+      auto item = inventory->GetItems(i).Get();
+      if (!item) {
+        continue;
+      }
+      bool equipped = false;
+      for (size_t e = 0; e < 15; e++) {
+        if (dest->GetEquippedItems(e).Get() == item) {
+          equipped = true;
+          break;
+        }
+      }
+      if (!equipped) {
+        scrap[item] = 0;
+      }
+    }
+    if (!scrap.empty()) {
+      characterManager->UpdateItems(client, false, insertItems, scrap);
+    }
+  }
+
+  uint32_t equippedCount = 0;
+  uint32_t failedCount = 0;
+  for (size_t i = 0; i < 15; i++) {
+    if (i == COMP_SLOT || !want[i]) {
+      continue;
+    }
+    auto cur = dest->GetEquippedItems(i).Get();
+    if (cur && cur->GetType() == want[i]) {
+      equippedCount++;
+      continue;
+    }
+
+    auto def = definitionManager->GetItemData(want[i]);
+    if (!def || def->GetBasic()->GetEquipType() ==
+                    objects::MiItemBasicData::EquipType_t::EQUIP_TYPE_NONE) {
+      failedCount++;
+      SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          libcomp::String("@copygear: skip slot %1 unknown Type %2")
+              .Arg(i)
+              .Arg(want[i]));
+      continue;
+    }
+
+    auto pick = characterManager->GenerateItem(want[i], 1);
+    if (!pick) {
+      failedCount++;
+      continue;
+    }
+
+    std::list<std::shared_ptr<objects::Item>> insertItems;
+    std::unordered_map<std::shared_ptr<objects::Item>, uint16_t> stackAdjust;
+    insertItems.push_back(pick);
+    if (!characterManager->UpdateItems(client, false, insertItems,
+                                       stackAdjust)) {
+      failedCount++;
+      SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          libcomp::String("@copygear: could not place Type %1 (bag full?)")
+              .Arg(want[i]));
+      continue;
+    }
+
+    int64_t objID = state->GetObjectID(pick->GetUUID());
+    if (objID <= 0) {
+      failedCount++;
+      continue;
+    }
+    characterManager->EquipItem(client, objID);
+    if (dest->GetEquippedItems(i).Get() == pick) {
+      equippedCount++;
+    } else {
+      failedCount++;
+      SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          libcomp::String(
+              "@copygear: EquipItem failed for Type %1 slot %2 "
+              "(gender/level restriction?)")
+              .Arg(want[i])
+              .Arg(i));
+    }
+  }
+
+  auto zone = state->GetCharacterState()->GetZone();
+  if (zone) {
+    auto others = server->GetZoneManager()->GetZoneConnections(client, false);
+    if (!others.empty()) {
+      characterManager->SendOtherCharacterData(others, state);
+    }
+    server->GetZoneManager()->ShowEntityToZone(
+        zone, state->GetCharacterState()->GetEntityID());
+  }
+
+  return SendChatMessage(
+      client, ChatType_t::CHAT_SELF,
+      libcomp::String(
+          "@copygear %1 → %2: equipped %3/%4 slot Types (COMP kept)%5")
+          .Arg(source->GetName())
+          .Arg(dest->GetName())
+          .Arg(equippedCount)
+          .Arg(slotsWithGear)
+          .Arg(failedCount ? libcomp::String(", %1 failed").Arg(failedCount)
+                           : libcomp::String("")));
+}
+
+bool ChatManager::GMCommand_CopyGear(
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    const std::list<libcomp::String>& args) {
+  if (!HaveUserLevel(client, SVR_CONST.GM_CMD_LVL_ITEM)) {
+    return true;
+  }
+
+  std::list<libcomp::String> argsCopy = args;
+  libcomp::String srcName;
+  if (!GetStringArg(srcName, argsCopy) || srcName.IsEmpty()) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "Usage: @copygear NAME");
+  }
+
+  auto state = client->GetClientState();
+  auto dest = state->GetCharacterState()->GetEntity();
+  if (!dest) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "@copygear failed: no character");
+  }
+
+  std::shared_ptr<objects::Character> dbChar;
+  std::shared_ptr<objects::Account> dbAcct;
+  std::shared_ptr<ChannelClientConnection> srcClient;
+  if (!GetTargetCharacterAccount(srcName, true, dbChar, dbAcct, srcClient)) {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String("@copygear: unknown character '%1'").Arg(srcName));
+  }
+
+  std::shared_ptr<objects::Character> source;
+  if (srcClient) {
+    auto srcState = srcClient->GetClientState();
+    auto srcCState = srcState ? srcState->GetCharacterState() : nullptr;
+    source = srcCState ? srcCState->GetEntity() : nullptr;
+  }
+  if (!source) {
+    source = dbChar;
+  }
+  if (!source) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "@copygear failed: could not load source");
+  }
+
+  if (source->GetGender() != dest->GetGender()) {
+    auto genderName = [](objects::Character::Gender_t g) {
+      return g == objects::Character::Gender_t::FEMALE ? "female" : "male";
+    };
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String(
+            "@copygear refused: '%1' is %2, you are %3. Use the "
+            "matching mannequin.")
+            .Arg(source->GetName())
+            .Arg(genderName(source->GetGender()))
+            .Arg(genderName(dest->GetGender())));
+  }
+
+  return CopyStudioGear(client, source);
 }
 
 bool ChatManager::GMCommand_Counter(
@@ -987,6 +1471,188 @@ bool ChatManager::GMCommand_Crash(
   (void)args;
 
   abort();
+}
+
+static uint32_t DummyWeaponTypeForSubCategory(uint8_t subCategory) {
+  switch (subCategory) {
+    case 23:
+      return 1901;  // tonfa
+    case 24:
+      return 1201;  // machete / 1H blade
+    case 25:
+      return 1301;  // knife
+    case 26:
+      return 1401;  // rod
+    case 27:
+      return 1501;  // 2H sword
+    case 28:
+      return 1601;  // spear
+    case 29:
+      return 1701;  // axe
+    case 32:
+      return 2001;  // pistol / HG
+    case 33:
+      return 2101;  // rifle / RF
+    case 34:
+      return 2201;  // shotgun / SG
+    default:
+      return 0;
+  }
+}
+
+bool ChatManager::EquipStudioDummyWeapon(
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    bool quietIfNoVA) {
+  auto server = mServer.lock();
+  auto state = client->GetClientState();
+  auto character = state->GetCharacterState()->GetEntity();
+  if (!character) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "@dummyweapon failed: no character");
+  }
+
+  uint32_t vaType = character->GetEquippedVA(24);
+  if (!vaType) {
+    if (!quietIfNoVA) {
+      SendChatMessage(client, ChatType_t::CHAT_SELF,
+                      "@dummyweapon: no weapon VA (slot 24)");
+    }
+    return true;
+  }
+
+  auto definitionManager = server->GetDefinitionManager();
+  auto vaData = definitionManager->GetItemData(vaType);
+  auto vaCat = vaData && vaData->GetCommon() ? vaData->GetCommon()->GetCategory()
+                                             : nullptr;
+  if (!vaCat) {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String("@dummyweapon: unknown VA item type %1").Arg(vaType));
+  }
+
+  uint8_t subCategory = vaCat->GetSubCategory();
+  uint32_t dummyType = DummyWeaponTypeForSubCategory(subCategory);
+  if (!dummyType) {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String(
+            "@dummyweapon: no dummy mapped for VA %1 subCategory %2")
+            .Arg(vaType)
+            .Arg(subCategory));
+  }
+
+  auto characterManager = server->GetCharacterManager();
+  auto equipped = character->GetEquippedItems(13).Get();
+  if (equipped) {
+    auto eqData = definitionManager->GetItemData(equipped->GetType());
+    auto eqCat =
+        eqData && eqData->GetCommon() ? eqData->GetCommon()->GetCategory()
+                                      : nullptr;
+    if (eqCat && eqCat->GetSubCategory() == subCategory) {
+      return SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          libcomp::String(
+              "@dummyweapon: slot 13 Type %1 already matches VA %2 "
+              "(subCategory %3)")
+              .Arg(equipped->GetType())
+              .Arg(vaType)
+              .Arg(subCategory));
+    }
+  }
+
+  auto existing = characterManager->GetExistingItems(character, dummyType);
+  std::shared_ptr<objects::Item> pick =
+      existing.empty() ? nullptr : existing.front();
+  if (!pick) {
+    auto inventory = character->GetItemBoxes(0).Get();
+    if (!inventory) {
+      return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                             "@dummyweapon: no inventory");
+    }
+
+    // First empty or unequipped slot (usually 0). Never clobber COMP/gear.
+    int8_t destSlot = -1;
+    std::shared_ptr<objects::Item> occupant;
+    for (size_t i = 0; i < 50; i++) {
+      auto item = inventory->GetItems(i).Get();
+      if (!item) {
+        destSlot = (int8_t)i;
+        break;
+      }
+      bool equippedItem = false;
+      for (size_t e = 0; e < 15; e++) {
+        if (character->GetEquippedItems(e).Get() == item) {
+          equippedItem = true;
+          break;
+        }
+      }
+      if (!equippedItem) {
+        destSlot = (int8_t)i;
+        occupant = item;
+        break;
+      }
+    }
+    if (destSlot < 0) {
+      return SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          "@dummyweapon: no unequipped inventory slot to overwrite");
+    }
+
+    std::list<std::shared_ptr<objects::Item>> insertItems;
+    std::unordered_map<std::shared_ptr<objects::Item>, uint16_t> stackAdjust;
+    if (occupant) {
+      stackAdjust[occupant] = 0;
+    }
+    pick = characterManager->GenerateItem(dummyType, 1);
+    insertItems.push_back(pick);
+    if (!pick || !characterManager->UpdateItems(client, false, insertItems,
+                                                stackAdjust)) {
+      return SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          libcomp::String(
+              "@dummyweapon: failed to place dummy Type %1 in slot %2")
+              .Arg(dummyType)
+              .Arg(destSlot + 1));
+    }
+    SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String("@dummyweapon: placed Type %1 in inventory slot %2%3")
+            .Arg(dummyType)
+            .Arg(destSlot + 1)
+            .Arg(occupant ? " (overwrote junk)" : ""));
+  }
+
+  int64_t objID = state->GetObjectID(pick->GetUUID());
+  if (objID <= 0) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "@dummyweapon: dummy has no client object ID");
+  }
+
+  characterManager->EquipItem(client, objID);
+  auto nowEq = character->GetEquippedItems(13).Get();
+  if (!nowEq || nowEq != pick) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "@dummyweapon: EquipItem did not stick");
+  }
+
+  return SendChatMessage(
+      client, ChatType_t::CHAT_SELF,
+      libcomp::String(
+          "@dummyweapon: equipped Type %1 for VA %2 (subCategory %3)")
+          .Arg(dummyType)
+          .Arg(vaType)
+          .Arg(subCategory));
+}
+
+bool ChatManager::GMCommand_DummyWeapon(
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    const std::list<libcomp::String>& args) {
+  (void)args;
+  if (!HaveUserLevel(client, SVR_CONST.GM_CMD_LVL_ITEM)) {
+    return true;
+  }
+
+  return EquipStudioDummyWeapon(client, false);
 }
 
 bool ChatManager::GMCommand_DigitalizePoints(
@@ -1721,6 +2387,12 @@ bool ChatManager::GMCommand_Help(
       {"bp",
        {"@bp POINTS", "Set the current character's Battle Point current",
         "amount and total accumulated points as well."}},
+      {"clearinventory",
+       {"@clearinventory",
+        "Scrap every unequipped inventory item. Equipped gear",
+        "(including COMP) is kept. Alias: @clearinv."}},
+      {"clearinv",
+       {"@clearinv", "Alias for @clearinventory."}},
       {"coin",
        {"@coin AMOUNT", "Set the current character's casino coin AMOUNT."}},
       {"contract",
@@ -1728,6 +2400,18 @@ bool ChatManager::GMCommand_Help(
            "@contract ID|NAME",
            "Adds demon given by it's ID or NAME to your COMP.",
        }},
+      {"copygear",
+       {"@copygear NAME",
+        "Copy NAME's real EquippedItems (by Type) onto your mannequin.",
+        "Skips COMP. Generates studio copies and equips them. Use for",
+        "characters with no VA. Gender mismatch is refused."}},
+      {"copylook",
+       {"@copylook NAME",
+        "Copy NAME's skin/hair/face/eyes/colors and EquippedVA onto",
+        "your live character (mannequin). Gender is not copied;",
+        "mismatch is refused. Online source uses channel RAM,",
+        "else world SQLite. If NAME has no VA, also runs @copygear.",
+        "Does not copy title or partner demon."}},
       {"counter",
        {"@counter ID [NAME] [VALUE]",
         "View a world counter with a specific ID or view/add",
@@ -1739,6 +2423,15 @@ bool ChatManager::GMCommand_Help(
            "@crash",
            "Causes the server to crash for testing the database.",
        }},
+      {"dummyweapon",
+       {"@dummyweapon",
+        "Equip a cheap dummy in weapon slot 13 matching EquippedVA",
+        "slot 24's ItemData subCategory (tonfa/machete/pistol/…).",
+        "If the dummy is missing, it overwrites the first unequipped",
+        "inventory slot (usually slot 1) so a full bag still works.",
+        "Alias: @dummywep."}},
+      {"dummywep",
+       {"@dummywep", "Alias for @dummyweapon."}},
       {"dxp",
        {"@dxp RACEID POINTS",
         "Gain digitalize XP for the specified demon race ID."}},
@@ -1816,6 +2509,13 @@ bool ChatManager::GMCommand_Help(
            "instance ID and optional variant ID. This IDs must be in",
            "the XML data.",
        }},
+      {"invuln",
+       {"@invuln [0|1]",
+        "Toggle server-side invulnerability for this session (alias: @god).",
+        "Ignores HP damage for character and summoned demon. Optional 0/1",
+        "forces off/on; omit to toggle."}},
+      {"god",
+       {"@god [0|1]", "Alias for @invuln."}},
       {"item",
        {"@item ID|NAME [QTY]",
         "Adds the item given by the ID or NAME in the specified",
@@ -1869,6 +2569,11 @@ bool ChatManager::GMCommand_Help(
        {"@quest ID PHASE",
         "Sets the phase of the quest given by the ID to the phase",
         "PHASE. A phase of -1 is complete and -2 is a reset."}},
+      {"reloadchar",
+       {"@reloadchar",
+        "Re-show this character in the zone (PACKET_SHOW_ENTITY) and",
+        "resend OTHER_CHARACTER_DATA to nearby players. Does not send",
+        "the login PACKET_CHARACTER_DATA blob (that despawns you)."}},
       {"reported",
        {"@reported [COUNT|PLAYERNAME]",
         "Get a set of unresolved reported player records of a",
@@ -1943,6 +2648,12 @@ bool ChatManager::GMCommand_Help(
         "to the player or the player's demon if DEMON is set",
         "to 'demon'. STACK must be specified if CLEAR is not",
         "set to 'clear'. DEMON may not be specified if CLEAR", "is set."}},
+      {"va",
+       {"@va [SLOT ITEMTYPE|-1 | clear]",
+        "Set live EquippedVA and notify the client (same packets as",
+        "the VA UI). No args dumps current slots. SLOT 0-26 (weapon",
+        "is 24). ITEMTYPE -1 or 'clear' removes. Example:",
+        "@va 3 23602  (Bordia top), @va 24 2004  (Desert Rambus)."}},
       {"valuable",
        {"@valuable ID [REMOVE]",
         "Grants the player the valuable with the given ID. If",
@@ -1974,29 +2685,41 @@ bool ChatManager::GMCommand_Help(
     return true;
   }
 
-  libcomp::String command;
-
-  if (1 < args.size()) {
-    command = "help";
-  } else if (!args.empty()) {
-    command = args.front().ToLower();
+  if (args.size() > 1) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "Usage: @help [command]");
   }
 
-  if (command.IsEmpty()) {
+  if (args.empty()) {
+    SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String("Available GM commands (%1):").Arg(usage.size()));
     for (auto cmd : usage) {
       SendChatMessage(client, ChatType_t::CHAT_SELF, cmd.second.front());
     }
+    SendChatMessage(client, ChatType_t::CHAT_SELF,
+                    "Use @help COMMAND for details (example: @help spawn).");
   } else {
-    auto cmd = usage.find(command.ToUtf8());
+    std::string command = args.front().ToLower().ToUtf8();
+    if (!command.empty() && command.front() == '@') {
+      command.erase(0, 1);
+    }
+
+    auto cmd = usage.find(command);
 
     if (usage.end() != cmd) {
+      SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          libcomp::String("Help for @%1:").Arg(libcomp::String(command)));
       for (auto line : cmd->second) {
         SendChatMessage(client, ChatType_t::CHAT_SELF, line);
       }
     } else {
       SendChatMessage(
           client, ChatType_t::CHAT_SELF,
-          libcomp::String("The command '%1' does not exist.").Arg(command));
+          libcomp::String(
+              "Unknown GM command '@%1'. Use @help to list commands.")
+              .Arg(libcomp::String(command)));
     }
   }
 
@@ -2138,7 +2861,38 @@ bool ChatManager::GMCommand_Instance(
         libcomp::String("Failed to add to instance: %1").Arg(instanceID));
   }
 
-  return true;
+  return SendChatMessage(
+      client, ChatType_t::CHAT_SELF,
+      libcomp::String("Instance %1 (variant %2) created successfully%3.")
+          .Arg(instanceID)
+          .Arg(variantID)
+          .Arg(diaspora ? "" : "; entering now"));
+}
+
+bool ChatManager::GMCommand_Invuln(
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    const std::list<libcomp::String>& args) {
+  if (!HaveUserLevel(client, SVR_CONST.GM_CMD_LVL_INVULN)) {
+    return true;
+  }
+
+  std::list<libcomp::String> argsCopy = args;
+  auto state = client->GetClientState();
+
+  uint8_t forced = 0;
+  bool enable;
+  if (GetIntegerArg(forced, argsCopy)) {
+    enable = forced != 0;
+  } else {
+    enable = !state->GetInvulnerable();
+  }
+
+  state->SetInvulnerable(enable);
+
+  return SendChatMessage(
+      client, ChatType_t::CHAT_SELF,
+      libcomp::String("Invulnerability %1 (character + summoned demon).")
+          .Arg(enable ? "enabled" : "disabled"));
 }
 
 bool ChatManager::GMCommand_Item(
@@ -2158,7 +2912,8 @@ bool ChatManager::GMCommand_Item(
   if (!GetIntegerArg<uint32_t>(itemID, argsCopy)) {
     libcomp::String name;
     if (!GetStringArg(name, argsCopy)) {
-      return false;
+      return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                             "Usage: @item ID|NAME [quantity]");
     }
 
     if (name.ToLower() == "macca") {
@@ -2168,7 +2923,9 @@ bool ChatManager::GMCommand_Item(
     } else {
       auto itemData = definitionManager->GetItemData(name);
       if (itemData == nullptr) {
-        return false;
+        return SendChatMessage(
+            client, ChatType_t::CHAT_SELF,
+            libcomp::String("Unknown item name: %1").Arg(name));
       }
       itemID = itemData->GetCommon()->GetID();
     }
@@ -2183,7 +2940,19 @@ bool ChatManager::GMCommand_Item(
   std::unordered_map<uint32_t, uint32_t> itemMap;
   itemMap[itemID] = stackSize;
 
-  return server->GetCharacterManager()->AddRemoveItems(client, itemMap, true);
+  if (!server->GetCharacterManager()->AddRemoveItems(client, itemMap, true)) {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String("Failed to add item %1 x%2 (check ID and inventory).")
+            .Arg(itemID)
+            .Arg(stackSize));
+  }
+
+  return SendChatMessage(
+      client, ChatType_t::CHAT_SELF,
+      libcomp::String("Added item %1 x%2 to your inventory.")
+          .Arg(itemID)
+          .Arg(stackSize));
 }
 
 bool ChatManager::GMCommand_Kick(
@@ -2929,6 +3698,41 @@ bool ChatManager::GMCommand_Quest(
   return true;
 }
 
+bool ChatManager::GMCommand_ReloadChar(
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    const std::list<libcomp::String>& args) {
+  (void)args;
+
+  if (!HaveUserLevel(client, SVR_CONST.GM_CMD_LVL_ITEM)) {
+    return true;
+  }
+
+  auto server = mServer.lock();
+  auto state = client->GetClientState();
+  auto characterManager = server->GetCharacterManager();
+  auto zoneManager = server->GetZoneManager();
+
+  auto cState = state->GetCharacterState();
+  auto zone = cState->GetZone();
+  if (!zone) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "@reloadchar requires you to be in a zone");
+  }
+
+  // Do NOT SendCharacterData(self): that login blob hides the avatar
+  // until a full zone populate. Re-show like BikeBoostOff / zone-in.
+  auto others = zoneManager->GetZoneConnections(client, false);
+  if (!others.empty()) {
+    characterManager->SendOtherCharacterData(others, state);
+  }
+
+  zoneManager->ShowEntityToZone(zone, cState->GetEntityID());
+  characterManager->SendMovementSpeed(client, cState, true);
+
+  return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                         "Re-showed entity in zone (no login character blob).");
+}
+
 bool ChatManager::GMCommand_Scrap(
     const std::shared_ptr<channel::ChannelClientConnection>& client,
     const std::list<libcomp::String>& args) {
@@ -3150,8 +3954,18 @@ bool ChatManager::GMCommand_Spawn(
   auto zoneManager = server->GetZoneManager();
   auto zone = zoneManager->GetCurrentZone(client);
 
-  zoneManager->UpdateSpawnGroups(zone, true);
-  return true;
+  if (!zone) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "Failed to refresh spawns: no current zone.");
+  }
+
+  if (!zoneManager->UpdateSpawnGroups(zone, true)) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "Failed to refresh spawn groups in this zone.");
+  }
+
+  return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                         "Spawn groups refreshed successfully.");
 }
 
 bool ChatManager::GMCommand_Speed(
@@ -3167,31 +3981,47 @@ bool ChatManager::GMCommand_Speed(
   auto state = client->GetClientState();
 
   float scaling = 1.f;
-  GetDecimalArg<float>(scaling, argsCopy);
+  if (!GetDecimalArg<float>(scaling, argsCopy) || scaling <= 0.f) {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        "Usage: @speed MULTIPLIER [demon] (multiplier must be above 0)");
+  }
 
   libcomp::String target;
-  bool isDemon = GetStringArg(target, argsCopy) && target.ToLower() == "demon";
+  bool hasTarget = GetStringArg(target, argsCopy);
+  bool isDemon = hasTarget && target.ToLower() == "demon";
+  if ((hasTarget && !isDemon) || !argsCopy.empty()) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "Usage: @speed MULTIPLIER [demon]");
+  }
+
   auto entity =
       isDemon
           ? std::dynamic_pointer_cast<ActiveEntityState>(state->GetDemonState())
           : std::dynamic_pointer_cast<ActiveEntityState>(
                 state->GetCharacterState());
 
-  if (entity) {
-    int16_t defaultSpeed = entity->GetCombatRunSpeed();
-    int16_t speed = (int16_t)ceil((float)defaultSpeed * scaling);
-    int16_t maxSpeed = (int16_t)ceil((double)defaultSpeed * 1.5);
-
-    if (speed > maxSpeed) {
-      maxSpeed = speed;
-    }
-
-    entity->SetSpeedBoost((int16_t)(speed - defaultSpeed));
-
-    server->GetCharacterManager()->SendMovementSpeed(client, entity, false);
+  if (!entity || entity->GetEntityID() <= 0) {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        isDemon ? "Cannot change speed: no demon is currently summoned."
+                : "Cannot change speed: character is not ready.");
   }
 
-  return true;
+  int16_t defaultSpeed = entity->GetCombatRunSpeed();
+  int16_t speed = (int16_t)ceil((float)defaultSpeed * scaling);
+
+  entity->SetSpeedBoost((int16_t)(speed - defaultSpeed));
+
+  server->GetCharacterManager()->SendMovementSpeed(client, entity, false);
+
+  return SendChatMessage(
+      client, ChatType_t::CHAT_SELF,
+      libcomp::String("%1 movement speed set to %2x (%3 -> %4).")
+          .Arg(isDemon ? "Demon" : "Character")
+          .Arg(scaling)
+          .Arg(defaultSpeed)
+          .Arg(speed));
 }
 
 bool ChatManager::GMCommand_Spirit(
@@ -3455,6 +4285,144 @@ bool ChatManager::GMCommand_Tokusei(
   return true;
 }
 
+bool ChatManager::GMCommand_VA(
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    const std::list<libcomp::String>& args) {
+  if (!HaveUserLevel(client, SVR_CONST.GM_CMD_LVL_ITEM)) {
+    return true;
+  }
+
+  auto server = mServer.lock();
+  auto state = client->GetClientState();
+  auto cState = state->GetCharacterState();
+  auto character = cState->GetEntity();
+  if (!character) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "@va failed: no character");
+  }
+
+  std::list<libcomp::String> argsCopy = args;
+
+  auto dumpVA = [&]() {
+    SendChatMessage(client, ChatType_t::CHAT_SELF, "EquippedVA (live RAM):");
+    bool any = false;
+    for (uint8_t i = 0; i <= MAX_VA_INDEX; i++) {
+      uint32_t va = character->GetEquippedVA(i);
+      if (va) {
+        any = true;
+        SendChatMessage(client, ChatType_t::CHAT_SELF,
+                        libcomp::String("  slot %1 = %2").Arg(i).Arg(va));
+      }
+    }
+    if (!any) {
+      SendChatMessage(client, ChatType_t::CHAT_SELF, "  (none)");
+    }
+  };
+
+  if (argsCopy.empty()) {
+    dumpVA();
+    return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                           "Usage: @va SLOT ITEMTYPE  |  @va SLOT -1  |  "
+                           "@va clear");
+  }
+
+  std::list<std::pair<int8_t, uint32_t>> changeMap;
+
+  libcomp::String first = argsCopy.front();
+  if (first.ToLower() == "clear") {
+    argsCopy.pop_front();
+    for (uint8_t i = 0; i <= MAX_VA_INDEX; i++) {
+      if (character->GetEquippedVA(i)) {
+        changeMap.push_back(
+            std::pair<int8_t, uint32_t>((int8_t)i, (uint32_t)-1));
+      }
+    }
+    if (changeMap.empty()) {
+      return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                             "@va clear: already empty");
+    }
+  } else {
+    int16_t slot = 0;
+    if (!GetIntegerArg<int16_t>(slot, argsCopy) || slot < 0 ||
+        slot > (int16_t)MAX_VA_INDEX) {
+      return SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          libcomp::String("@va SLOT must be 0-%1 (weapon is 24)")
+              .Arg(MAX_VA_INDEX));
+    }
+
+    int32_t itemType = 0;
+    libcomp::String itemArg;
+    if (GetIntegerArg<int32_t>(itemType, argsCopy)) {
+      // parsed
+    } else if (GetStringArg(itemArg, argsCopy) &&
+               itemArg.ToLower() == "clear") {
+      itemType = -1;
+    } else {
+      return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                             "Usage: @va SLOT ITEMTYPE  |  @va SLOT -1");
+    }
+
+    if (itemType > 0) {
+      auto itemData =
+          server->GetDefinitionManager()->GetItemData((uint32_t)itemType);
+      if (!itemData) {
+        return SendChatMessage(
+            client, ChatType_t::CHAT_SELF,
+            libcomp::String("@va unknown item type %1").Arg(itemType));
+      }
+    }
+
+    changeMap.push_back(std::pair<int8_t, uint32_t>(
+        (int8_t)slot, itemType < 0 ? (uint32_t)-1 : (uint32_t)itemType));
+  }
+
+  libcomp::Packet reply;
+  reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_VA_CHANGE);
+  reply.WriteS32Little(0);  // Success
+  reply.WriteS32Little(0);
+
+  libcomp::Packet notify;
+  notify.WritePacketCode(ChannelToClientPacketCode_t::PACKET_VA_CHANGED);
+  notify.WriteS32Little(cState->GetEntityID());
+
+  reply.WriteS32Little((int32_t)changeMap.size());
+  notify.WriteS32Little((int32_t)changeMap.size());
+  for (auto pair : changeMap) {
+    if (pair.second == static_cast<uint32_t>(-1)) {
+      character->RemoveEquippedVA((uint8_t)pair.first);
+    } else {
+      character->SetEquippedVA((uint8_t)pair.first, pair.second);
+    }
+
+    reply.WriteS8(pair.first);
+    reply.WriteS32Little((int32_t)pair.second);
+
+    notify.WriteS8(pair.first);
+    notify.WriteS32Little((int32_t)pair.second);
+  }
+
+  client->SendPacket(reply);
+  server->GetZoneManager()->BroadcastPacket(client, notify, false);
+  server->GetWorldDatabase()->QueueUpdate(character, state->GetAccountUID());
+
+  dumpVA();
+
+  for (auto pair : changeMap) {
+    if (pair.first == 24 && pair.second != static_cast<uint32_t>(-1) &&
+        character->GetEquippedItems(13).IsNull()) {
+      SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          "Note: weapon VA (slot 24) does not render without a real "
+          "weapon equipped (e.g. any pistol for Desert Rambus). Closet "
+          "flag alone is not enough.");
+    }
+  }
+
+  return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                         "@va applied (RAM + packets).");
+}
+
 bool ChatManager::GMCommand_Valuable(
     const std::shared_ptr<channel::ChannelClientConnection>& client,
     const std::list<libcomp::String>& args) {
@@ -3660,7 +4628,13 @@ bool ChatManager::GMCommand_Zone(
                                  .Arg(dynamicMapID));
     }
 
-    return true;
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String("Entered zone %1 (dynamic map %2) at %3, %4.")
+            .Arg(zoneID)
+            .Arg(dynamicMapID)
+            .Arg(xCoord)
+            .Arg(yCoord));
   } else {
     return SendChatMessage(client, ChatType_t::CHAT_SELF,
                            "USAGE: @zone [ID [X Y]]");
