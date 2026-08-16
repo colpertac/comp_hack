@@ -185,8 +185,14 @@ bool StudioHandler::handlePost(CivetServer* pServer,
   if (uri == "/studio/dress") {
     return HandleDress(pConnection);
   }
+  if (uri == "/studio/pose") {
+    return HandlePose(pConnection);
+  }
   if (uri == "/studio/nameplate") {
     return HandleNameplate(pConnection);
+  }
+  if (uri == "/studio/ensure-name") {
+    return HandleEnsureName(pConnection);
   }
   return false;
 }
@@ -351,6 +357,77 @@ bool StudioHandler::HandleDress(struct mg_connection* pConnection) {
   return true;
 }
 
+bool StudioHandler::HandlePose(struct mg_connection* pConnection) {
+  JsonBox::Object obj;
+  if (!ReadJsonBody(pConnection, obj)) {
+    return true;
+  }
+
+  auto mannequin = JsonGetString(obj, "mannequin");
+  if (mannequin.IsEmpty()) {
+    ReplyJson(pConnection, 400,
+              "{\"ok\":false,\"error\":\"need mannequin\"}");
+    return true;
+  }
+
+  uint32_t zoneID = 10105;
+  float x = 50000.f;
+  float y = 50000.f;
+  {
+    libcomp::String mannequinLower = mannequin.ToLower();
+    if (mannequinLower == "vaf" || mannequinLower == "vaf1") {
+      x = -50000.f;
+      y = -50000.f;
+    }
+  }
+  double num = 0;
+  if (JsonGetNumber(obj, "zone", num)) {
+    zoneID = static_cast<uint32_t>(num);
+  }
+  if (JsonGetNumber(obj, "x", num)) {
+    x = static_cast<float>(num);
+  }
+  if (JsonGetNumber(obj, "y", num)) {
+    y = static_cast<float>(num);
+  }
+
+  auto chat = mServer->GetChatManager();
+  std::shared_ptr<ChannelClientConnection> client;
+  auto resolveErr = chat->ResolveStudioMannequinClient(mannequin, client);
+  if (!resolveErr.IsEmpty() || !client) {
+    ReplyJson(pConnection, 409,
+              libcomp::String("{\"ok\":false,\"error\":\"%1\"}")
+                  .Arg(EscapeJson(resolveErr.IsEmpty()
+                                      ? libcomp::String("mannequin offline: %1")
+                                            .Arg(mannequin)
+                                      : resolveErr)));
+    return true;
+  }
+
+  auto poseErr = chat->PoseStudioMannequin(client, zoneID, x, y);
+  if (!poseErr.IsEmpty()) {
+    ReplyJson(pConnection, 409,
+              libcomp::String("{\"ok\":false,\"error\":\"%1\"}")
+                  .Arg(EscapeJson(poseErr)));
+    return true;
+  }
+
+  LogGeneralInfo([&]() {
+    return libcomp::String("Studio pose: %1 zone=%2 (%3,%4)\n")
+        .Arg(mannequin)
+        .Arg(zoneID)
+        .Arg(x)
+        .Arg(y);
+  });
+
+  ReplyJson(pConnection, 200,
+            libcomp::String("{\"ok\":true,\"mannequin\":\"%1\",\"posed\":true,"
+                            "\"zone\":%2}")
+                .Arg(mannequin)
+                .Arg(zoneID));
+  return true;
+}
+
 bool StudioHandler::HandleNameplate(struct mg_connection* pConnection) {
   JsonBox::Object obj;
   if (!ReadJsonBody(pConnection, obj)) {
@@ -403,5 +480,38 @@ bool StudioHandler::HandleNameplate(struct mg_connection* pConnection) {
             libcomp::String("{\"ok\":true,\"mannequin\":\"%1\",\"visible\":%2}")
                 .Arg(mannequin)
                 .Arg(visible ? "true" : "false"));
+  return true;
+}
+
+bool StudioHandler::HandleEnsureName(struct mg_connection* pConnection) {
+  JsonBox::Object obj;
+  if (!ReadJsonBody(pConnection, obj)) {
+    return true;
+  }
+
+  auto mannequin = JsonGetString(obj, "mannequin");
+  if (mannequin.IsEmpty()) {
+    ReplyJson(pConnection, 400,
+              "{\"ok\":false,\"error\":\"need mannequin\"}");
+    return true;
+  }
+
+  auto chat = mServer->GetChatManager();
+  bool repaired = false;
+  libcomp::String name;
+  auto err = chat->EnsureStudioMannequinName(mannequin, repaired, name);
+  if (!err.IsEmpty()) {
+    ReplyJson(pConnection, 409,
+              libcomp::String("{\"ok\":false,\"error\":\"%1\"}")
+                  .Arg(EscapeJson(err)));
+    return true;
+  }
+
+  ReplyJson(pConnection, 200,
+            libcomp::String("{\"ok\":true,\"mannequin\":\"%1\",\"name\":\"%2\","
+                            "\"repaired\":%3}")
+                .Arg(mannequin)
+                .Arg(EscapeJson(name))
+                .Arg(repaired ? "true" : "false"));
   return true;
 }

@@ -33,6 +33,7 @@
 #include <Log.h>
 #include <Packet.h>
 #include <PacketCodes.h>
+#include <PersistentObject.h>
 #include <ServerConstants.h>
 #include <ServerDataManager.h>
 
@@ -78,6 +79,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <vector>
 #include <mutex>
 #include <set>
 #include <string>
@@ -1374,6 +1376,38 @@ libcomp::String ChatManager::RestoreStudioNameplate(
   return "";
 }
 
+
+namespace {
+
+bool StudioNameIsBlank(const libcomp::String& name) {
+  return name.Trimmed().IsEmpty();
+}
+
+libcomp::String ExpectedStudioCharName(const libcomp::String& mannequin) {
+  auto a = mannequin.ToLower();
+  if (a == "vam1" || a == "vam") {
+    return "vam";
+  }
+  if (a == "vaf1" || a == "vaf") {
+    return "vaf";
+  }
+  return "";
+}
+
+std::vector<libcomp::String> StudioAccountAliases(
+    const libcomp::String& mannequin) {
+  auto a = mannequin.ToLower();
+  if (a == "vam1" || a == "vam") {
+    return {"vam1", "vam"};
+  }
+  if (a == "vaf1" || a == "vaf") {
+    return {"vaf1", "vaf"};
+  }
+  return {mannequin};
+}
+
+}  // namespace
+
 libcomp::String ChatManager::ResolveStudioMannequinClient(
     const libcomp::String& mannequin,
     std::shared_ptr<channel::ChannelClientConnection>& outClient) {
@@ -1385,14 +1419,16 @@ libcomp::String ChatManager::ResolveStudioMannequinClient(
 
   // Prefer account username — mannequin accounts are vam/vaf; character Name
   // must not be required (blank-name hide used to break name lookup).
-  auto byAccount =
-      server->GetManagerConnection()->GetClientConnection(mannequin);
-  if (byAccount) {
-    auto state = byAccount->GetClientState();
-    auto cState = state ? state->GetCharacterState() : nullptr;
-    if (cState && cState->GetEntity()) {
-      outClient = byAccount;
-      return "";
+  for (const auto& alias : StudioAccountAliases(mannequin)) {
+    auto byAccount =
+        server->GetManagerConnection()->GetClientConnection(alias);
+    if (byAccount) {
+      auto state = byAccount->GetClientState();
+      auto cState = state ? state->GetCharacterState() : nullptr;
+      if (cState && cState->GetEntity()) {
+        outClient = byAccount;
+        return "";
+      }
     }
   }
 
@@ -1405,7 +1441,127 @@ libcomp::String ChatManager::ResolveStudioMannequinClient(
     return "";
   }
 
+  // Try expected char name (vam/vaf) when account alias lookup failed.
+  auto expected = ExpectedStudioCharName(mannequin);
+  if (!expected.IsEmpty() && expected != mannequin) {
+    libcomp::String tryName = expected;
+    if (GetTargetCharacterAccount(tryName, true, ch, ac, byChar) && byChar) {
+      outClient = byChar;
+      return "";
+    }
+  }
+
   return libcomp::String("mannequin offline: %1").Arg(mannequin);
+}
+
+libcomp::String ChatManager::EnsureStudioMannequinName(
+    const libcomp::String& mannequin, bool& outRepaired,
+    libcomp::String& outName) {
+  outRepaired = false;
+  outName = "";
+  auto server = mServer.lock();
+  if (!server || mannequin.IsEmpty()) {
+    return "ensure-name failed: no server/name";
+  }
+
+  auto expected = ExpectedStudioCharName(mannequin);
+  if (expected.IsEmpty()) {
+    return libcomp::String("ensure-name failed: unknown mannequin %1")
+        .Arg(mannequin);
+  }
+
+  // Online path: fix RAM + persist + refresh clients.
+  std::shared_ptr<ChannelClientConnection> client;
+  auto resolveErr = ResolveStudioMannequinClient(mannequin, client);
+  if (resolveErr.IsEmpty() && client) {
+    auto state = client->GetClientState();
+    auto cState = state ? state->GetCharacterState() : nullptr;
+    auto character = cState ? cState->GetEntity() : nullptr;
+    if (!character) {
+      return "ensure-name failed: no character";
+    }
+    outName = character->GetName();
+    if (!StudioNameIsBlank(outName)) {
+      return "";
+    }
+    character->SetName(expected);
+    outName = expected;
+    outRepaired = true;
+    auto characterManager = server->GetCharacterManager();
+    characterManager->SendCharacterData(client);
+    auto zone = cState->GetZone();
+    if (zone) {
+      auto others =
+          server->GetZoneManager()->GetZoneConnections(client, false);
+      if (!others.empty()) {
+        characterManager->SendOtherCharacterData(others, state);
+      }
+      server->GetZoneManager()->ShowEntityToZone(zone, cState->GetEntityID());
+    }
+    server->GetWorldDatabase()->QueueUpdate(character, state->GetAccountUID());
+    client->FlushOutgoing();
+    LogGeneralInfo([&]() {
+      return libcomp::String(
+                 "Studio ensure-name: repaired online %1 → \"%2\"\n")
+          .Arg(mannequin)
+          .Arg(expected);
+    });
+    return "";
+  }
+
+  // Offline path: load account's only character from lobby + world DB.
+  auto lobbyDB = server->GetLobbyDatabase();
+  auto worldDB = server->GetWorldDatabase();
+  if (!lobbyDB || !worldDB) {
+    return "ensure-name failed: no database";
+  }
+
+  std::shared_ptr<objects::Account> account;
+  for (const auto& alias : StudioAccountAliases(mannequin)) {
+    account = objects::Account::LoadAccountByUsername(lobbyDB, alias);
+    if (account) {
+      break;
+    }
+  }
+  if (!account) {
+    return libcomp::String("ensure-name failed: account not found: %1")
+        .Arg(mannequin);
+  }
+
+  std::shared_ptr<objects::Character> character;
+  for (auto cref : account->GetCharacters()) {
+    if (cref.IsNull()) {
+      continue;
+    }
+    auto loaded =
+        libcomp::PersistentObject::LoadObjectByUUID<objects::Character>(
+            worldDB, cref.GetUUID(), true);
+    if (loaded) {
+      character = loaded;
+      break;
+    }
+  }
+  if (!character) {
+    return libcomp::String("ensure-name failed: no character on %1")
+        .Arg(mannequin);
+  }
+
+  outName = character->GetName();
+  if (!StudioNameIsBlank(outName)) {
+    return "";
+  }
+
+  character->SetName(expected);
+  outName = expected;
+  outRepaired = true;
+  worldDB->QueueUpdate(character, account->GetUUID());
+  LogGeneralInfo([&]() {
+    return libcomp::String(
+               "Studio ensure-name: repaired offline %1 → \"%2\"\n")
+        .Arg(mannequin)
+        .Arg(expected);
+  });
+  return "";
 }
 
 bool ChatManager::CopyStudioGear(

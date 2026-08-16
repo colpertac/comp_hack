@@ -145,6 +145,7 @@ class ChatManager {
   /**
    * Temporarily blank floating name + title for a clean portrait screenshot.
    * Does not QueueUpdate (never persist blank name). Pair with RestoreStudioNameplate.
+   * Per-job hold S re-faces after SendCharacterData snaps DestinationRotation.
    */
   libcomp::String HideStudioNameplate(
       const std::shared_ptr<channel::ChannelClientConnection>& mannequinClient);
@@ -162,6 +163,15 @@ class ChatManager {
   libcomp::String ResolveStudioMannequinClient(
       const libcomp::String& mannequin,
       std::shared_ptr<channel::ChannelClientConnection>& outClient);
+
+  /**
+   * If the mannequin account's character Name is blank/" ", restore the
+   * expected studio name (vam1→vam, vaf1→vaf) and persist. Works online
+   * (RAM + packets) or offline (world DB).
+   */
+  libcomp::String EnsureStudioMannequinName(
+      const libcomp::String& mannequin, bool& outRepaired,
+      libcomp::String& outName);
 
   /**
    * Resolve character name → Character / Account / online client.

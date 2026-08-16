@@ -38,7 +38,8 @@ namespace channel {
 class ChannelServer;
 
 /**
- * Loopback Civet handler for /studio/health, /studio/dress, /studio/nameplate.
+ * Loopback Civet handler for /studio/health, /studio/dress, /studio/pose,
+ * /studio/nameplate, /studio/ensure-name.
  * Bind only to 127.0.0.1; require X-Studio-Token matching ChannelConfig.
  */
 class StudioHandler : public CivetHandler {
@@ -63,7 +64,11 @@ class StudioHandler : public CivetHandler {
 
   bool HandleDress(struct mg_connection* pConnection);
 
+  bool HandlePose(struct mg_connection* pConnection);
+
   bool HandleNameplate(struct mg_connection* pConnection);
+
+  bool HandleEnsureName(struct mg_connection* pConnection);
 
   static libcomp::String EscapeJson(const libcomp::String& s);
 
