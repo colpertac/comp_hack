@@ -43,6 +43,7 @@
 // object Includes
 #include <Account.h>
 #include <AccountWorldData.h>
+#include <CurrencyCompressor.h>
 #include <ActivatedAbility.h>
 #include <CalculatedEntityState.h>
 #include <ChannelConfig.h>
@@ -1794,7 +1795,7 @@ std::shared_ptr<objects::Item> CharacterManager::GenerateItem(
 bool CharacterManager::AddRemoveItems(
     const std::shared_ptr<channel::ChannelClientConnection>& client,
     std::unordered_map<uint32_t, uint32_t> itemCounts, bool add,
-    int64_t skillTargetID) {
+    int64_t skillTargetID, bool allowCompress) {
   auto state = client->GetClientState();
   auto cState = state->GetCharacterState();
   auto character = cState->GetEntity();
@@ -1806,43 +1807,46 @@ bool CharacterManager::AddRemoveItems(
   const static bool autoCompressCurrency =
       server->GetWorldSharedConfig()->GetAutoCompressCurrency();
 
-  bool autoCompress = add && autoCompressCurrency;
+  bool autoCompress = add && autoCompressCurrency && allowCompress;
+  auto serverDataManager = server->GetServerDataManager();
   if (autoCompress) {
-    // Compress macca
-    auto it = itemCounts.find(SVR_CONST.ITEM_MACCA);
-    if (it != itemCounts.end() && it->second >= ITEM_MACCA_NOTE_AMOUNT) {
-      uint32_t maccaCount = it->second;
-      uint32_t noteCount = (uint32_t)(maccaCount / ITEM_MACCA_NOTE_AMOUNT);
-      maccaCount = (uint32_t)(maccaCount -
-                              (uint32_t)(noteCount * ITEM_MACCA_NOTE_AMOUNT));
-
-      if (noteCount > 0) {
-        itemCounts[SVR_CONST.ITEM_MACCA_NOTE] = noteCount;
-      }
-
-      if (maccaCount == 0) {
-        itemCounts.erase(SVR_CONST.ITEM_MACCA);
-      } else {
-        itemCounts[SVR_CONST.ITEM_MACCA] = maccaCount;
-      }
+    // Compress mapped base currencies into compressed forms
+    std::list<uint32_t> baseTypes;
+    for (auto& pair : itemCounts) {
+      baseTypes.push_back(pair.first);
     }
 
-    // Compress mag
-    it = itemCounts.find(SVR_CONST.ITEM_MAGNETITE);
-    if (it != itemCounts.end() && it->second >= ITEM_MAG_PRESSER_AMOUNT) {
-      uint32_t magCount = it->second;
-      uint32_t presserCount = (uint32_t)(magCount / ITEM_MAG_PRESSER_AMOUNT);
-      magCount = (uint32_t)(magCount -
-                            (uint32_t)(presserCount * ITEM_MAG_PRESSER_AMOUNT));
-
-      if (presserCount > 0) {
-        itemCounts[SVR_CONST.ITEM_MAG_PRESSER] = presserCount;
+    for (uint32_t baseType : baseTypes) {
+      auto compressor = serverDataManager->GetCurrencyCompressorByBase(baseType);
+      if (!compressor) {
+        continue;
       }
 
-      if (magCount == 0) {
-        itemCounts.erase(SVR_CONST.ITEM_MAGNETITE);
+      auto it = itemCounts.find(baseType);
+      if (it == itemCounts.end() || it->second < compressor->GetValue()) {
+        continue;
+      }
+
+      uint32_t baseCount = it->second;
+      uint32_t compressedCount =
+          (uint32_t)(baseCount / compressor->GetValue());
+      baseCount = (uint32_t)(baseCount -
+                             (uint32_t)(compressedCount * compressor->GetValue()));
+
+      if (compressedCount > 0) {
+        uint32_t compressedType = compressor->GetCompressedItemID();
+        if (itemCounts.find(compressedType) == itemCounts.end()) {
+          itemCounts[compressedType] = compressedCount;
+        } else {
+          itemCounts[compressedType] =
+              (uint32_t)(itemCounts[compressedType] + compressedCount);
+        }
+      }
+
+      if (baseCount == 0) {
+        itemCounts.erase(baseType);
       } else {
-        itemCounts[SVR_CONST.ITEM_MAGNETITE] = magCount;
+        itemCounts[baseType] = baseCount;
       }
     }
   }
@@ -1865,9 +1869,10 @@ bool CharacterManager::AddRemoveItems(
     auto existing = GetExistingItems(character, itemType);
     uint32_t maxStack = (uint32_t)def->GetPossession()->GetStackSize();
     if (add) {
-      bool compressible =
-          autoCompress && (itemType == SVR_CONST.ITEM_MACCA ||
-                           itemType == SVR_CONST.ITEM_MAGNETITE);
+      auto compressor =
+          autoCompress ? serverDataManager->GetCurrencyCompressorByBase(itemType)
+                       : nullptr;
+      bool compressible = compressor != nullptr;
 
       uint32_t quantityLeft = quantity;
       for (auto item : existing) {
@@ -1898,15 +1903,9 @@ bool CharacterManager::AddRemoveItems(
           if (added < quantity && free > 0) {
             if (compressible) {
               uint32_t increaseItem = 0;
-              if (itemType == SVR_CONST.ITEM_MACCA &&
-                  (uint32_t)(item->GetStackSize() + (quantity - added)) >=
-                      ITEM_MACCA_NOTE_AMOUNT) {
-                increaseItem = SVR_CONST.ITEM_MACCA_NOTE;
-              } else if (itemType == SVR_CONST.ITEM_MAGNETITE &&
-                         (uint32_t)(item->GetStackSize() +
-                                    (quantity - added)) >=
-                             ITEM_MAG_PRESSER_AMOUNT) {
-                increaseItem = SVR_CONST.ITEM_MAG_PRESSER;
+              if ((uint32_t)(item->GetStackSize() + (quantity - added)) >=
+                  compressor->GetValue()) {
+                increaseItem = compressor->GetCompressedItemID();
               }
 
               if (increaseItem) {

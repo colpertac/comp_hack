@@ -305,6 +305,12 @@ class ChannelServer : public libcomp::BaseServer {
   std::shared_ptr<objects::WorldSharedConfig> GetWorldSharedConfig() const;
 
   /**
+   * Get the live channel server instance (set during Initialize).
+   * @return Shared pointer to this channel server, or null if unset
+   */
+  static std::shared_ptr<ChannelServer> GetInstance();
+
+  /**
    * Increments and returns the next available entity ID.
    * @return Next game entity ID for the channel
    */
@@ -575,6 +581,9 @@ class ChannelServer : public libcomp::BaseServer {
 
   /// If the tick thread should continue running.
   volatile bool mTickRunning;
+
+  /// Live channel instance for config access from entity state code
+  static std::weak_ptr<ChannelServer> sInstance;
 };
 
 }  // namespace channel

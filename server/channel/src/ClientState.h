@@ -202,6 +202,20 @@ class ClientState : public objects::ClientStateObject {
   int32_t GetUserLevel() const;
 
   /**
+   * Get whether GM session invulnerability is enabled for this client.
+   * When true, HP reductions for the character and summoned demon are
+   * ignored by ActiveEntityState::SetHPMP.
+   * @return true if invulnerability is enabled
+   */
+  bool GetInvulnerable() const;
+
+  /**
+   * Enable or disable GM session invulnerability for this client.
+   * @param enabled true to ignore HP damage, false to restore normal combat
+   */
+  void SetInvulnerable(bool enabled);
+
+  /**
    * Get the current world CID associated to the logged in
    * character.
    * @return Current character's world CID
@@ -364,6 +378,9 @@ class ClientState : public objects::ClientStateObject {
 
   /// Next available local object ID
   int32_t mNextLocalObjectID;
+
+  /// Session-only GM invulnerability (@invuln / @god); not persisted
+  bool mInvulnerable = false;
 
   /// Server lock for shared resources
   std::mutex mLock;

@@ -1586,6 +1586,7 @@
     <constant name="GM_CMD_LVL_HELP">1</constant>
     <constant name="GM_CMD_LVL_HOMEPOINT">1</constant>
     <constant name="GM_CMD_LVL_INSTANCE">200</constant>
+    <constant name="GM_CMD_LVL_INVULN">200</constant>
     <constant name="GM_CMD_LVL_ITEM">250</constant>
     <constant name="GM_CMD_LVL_KICK">400</constant>
     <constant name="GM_CMD_LVL_LEVEL_UP">250</constant>

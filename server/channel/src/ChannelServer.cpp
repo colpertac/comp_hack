@@ -118,6 +118,7 @@ ChannelServer::ChannelServer(
 
 bool ChannelServer::Initialize() {
   auto self = shared_from_this();
+  sInstance = std::dynamic_pointer_cast<ChannelServer>(self);
 
   if (!BaseServer::Initialize()) {
     return false;
@@ -1006,6 +1007,12 @@ std::shared_ptr<objects::WorldSharedConfig>
 ChannelServer::GetWorldSharedConfig() const {
   return std::dynamic_pointer_cast<objects::ChannelConfig>(GetConfig())
       ->GetWorldSharedConfig();
+}
+
+std::weak_ptr<ChannelServer> ChannelServer::sInstance;
+
+std::shared_ptr<ChannelServer> ChannelServer::GetInstance() {
+  return sInstance.lock();
 }
 
 int32_t ChannelServer::GetNextEntityID() {

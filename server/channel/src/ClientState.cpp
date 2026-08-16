@@ -264,6 +264,10 @@ int32_t ClientState::GetUserLevel() const {
   return account ? account->GetUserLevel() : 0;
 }
 
+bool ClientState::GetInvulnerable() const { return mInvulnerable; }
+
+void ClientState::SetInvulnerable(bool enabled) { mInvulnerable = enabled; }
+
 int32_t ClientState::GetWorldCID() const {
   return GetAccountLogin()->GetCharacterLogin()->GetWorldCID();
 }

@@ -38,6 +38,26 @@
 #include <AccountWorldData.h>
 #include <BazaarData.h>
 #include <BazaarItem.h>
+#include <ChannelConfig.h>
+#include <Character.h>
+#include <CharacterLogin.h>
+#include <CharacterProgress.h>
+#include <Clan.h>
+#include <ClanMember.h>
+#include <Demon.h>
+#include <DemonBox.h>
+#include <EntityStats.h>
+#include <Expertise.h>
+#include <FriendSettings.h>
+#include <InstanceAccess.h>
+#include <Item.h>
+#include <ItemBox.h>
+#include <MiItemData.h>
+#include <MiPossessionData.h>
+#include <RegisteredChannel.h>
+#include <ServerZone.h>
+#include <StatusEffect.h>
+#include <WorldSharedConfig.h>
 #include <ChannelLogin.h>
 #include <CharacterLogin.h>
 #include <CharacterProgress.h>
@@ -254,23 +274,34 @@ void AccountManager::HandleLoginResponse(
 void AccountManager::HandleLogoutRequest(
     const std::shared_ptr<channel::ChannelClientConnection>& client,
     LogoutCode_t code, uint8_t channelIdx) {
-  // Queue disconnect and start the timer
+  // Always send LOGOUT_PREPARE before a delayed disconnect/switch. Without it,
+  // LOGOUT_DISCONNECT shows a generic "Disconnecting from the server" error and
+  // drops to the login screen (and can leave a stuck "Multiple logins" state).
+  // The client hardcodes the prepare chat to ~10s regardless of LogoutDelay;
+  // fixing that text needs a client patch (Phase 10), not skipping PREPARE.
   libcomp::Packet reply;
   reply.WritePacketCode(ChannelToClientPacketCode_t::PACKET_LOGOUT);
   reply.WriteU32Little((uint32_t)LogoutPacketAction_t::LOGOUT_PREPARE);
 
   client->SendPacket(reply);
 
-  // Countdown for 10 seconds
-  uint64_t timeout = (uint64_t)(ChannelServer::GetServerTime() + 10000000ULL);
+  auto server = mServer.lock();
+  auto sharedConfig = server->GetWorldSharedConfig();
+  uint16_t delaySec =
+      sharedConfig ? sharedConfig->GetLogoutDelay() : (uint16_t)10;
+
+  // Actual disconnect / channel-switch timing uses LogoutDelay.
+  uint64_t timeout =
+      (uint64_t)(ChannelServer::GetServerTime() +
+                 (uint64_t)delaySec * 1000000ULL);
 
   auto channelLogin = client->GetClientState()->GetChannelLogin();
   switch (code) {
     case LogoutCode_t::LOGOUT_CODE_QUIT: {
       // Just disconnect, no need to tell the world
       client->GetClientState()->SetLogoutTimer(timeout);
-      mServer.lock()->GetTimerManager()->ScheduleEventIn(
-          10,
+      server->GetTimerManager()->ScheduleEventIn(
+          (int)delaySec,
           [](std::shared_ptr<channel::ChannelClientConnection> pClient,
              uint64_t pTimeout) {
             if (pClient->GetClientState()->GetLogoutTimer() == pTimeout) {
@@ -286,7 +317,6 @@ void AccountManager::HandleLogoutRequest(
     case LogoutCode_t::LOGOUT_CODE_SWITCH:
       if (channelLogin) {
         // Request logout immediately
-        auto server = mServer.lock();
         auto account =
             client->GetClientState()->GetAccountLogin()->GetAccount();
 
@@ -301,10 +331,9 @@ void AccountManager::HandleLogoutRequest(
       } else {
         // Tell the world we're performing a channel switch and wait for
         // the message to be responded to
-        auto server = mServer.lock();
         client->GetClientState()->SetLogoutTimer(timeout);
         server->GetTimerManager()->ScheduleEventIn(
-            10,
+            (int)delaySec,
             [](std::shared_ptr<ChannelServer> pServer,
                std::shared_ptr<channel::ChannelClientConnection> pClient,
                uint8_t pChannelIdx, uint64_t pTimeout) {

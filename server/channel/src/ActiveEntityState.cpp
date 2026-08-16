@@ -26,6 +26,9 @@
 
 #include "ActiveEntityState.h"
 
+// channel Includes
+#include "ClientState.h"
+
 // libcomp Includes
 #include <Constants.h>
 #include <DefinitionManager.h>
@@ -71,6 +74,9 @@
 #include "AIState.h"
 #include "ChannelServer.h"
 #include "CharacterManager.h"
+
+// object Includes (config)
+#include <WorldSharedConfig.h>
 #include "TokuseiManager.h"
 #include "Zone.h"
 #include "ZoneInstance.h"
@@ -607,6 +613,11 @@ bool ActiveEntityState::SetHPMP(int32_t hp, int32_t mp, bool adjust,
     return false;
   }
 
+  // GM session invulnerability: ignore HP reductions for character/demon.
+  // Heals and MP changes still apply. Client XML cannot enable this.
+  auto* clientState = ClientState::GetEntityClientState(GetEntityID());
+  const bool invulnerable = clientState && clientState->GetInvulnerable();
+
   std::lock_guard<std::mutex> lock(mLock);
   auto maxHP = GetMaxHP();
   auto maxMP = GetMaxMP();
@@ -622,6 +633,14 @@ bool ActiveEntityState::SetHPMP(int32_t hp, int32_t mp, bool adjust,
   int32_t startingHP = cs->GetHP();
   int32_t startingMP = cs->GetMP();
   if (adjust) {
+    if (invulnerable && hp < 0) {
+      // Cancel HP damage only; keep MP deltas and heals.
+      if (canOverflow) {
+        hpAdjusted = 0;
+      }
+      hp = 0;
+    }
+
     hp = (int32_t)(startingHP + hp);
     mp = (int32_t)(startingMP + mp);
 
@@ -650,6 +669,11 @@ bool ActiveEntityState::SetHPMP(int32_t hp, int32_t mp, bool adjust,
       mp = 0;
     }
   } else {
+    // Absolute set: do not allow HP to drop while invulnerable.
+    if (invulnerable && hp >= 0 && hp < startingHP) {
+      hp = startingHP;
+    }
+
     // Return exact HP/MP adjustment
     if (hp >= 0) {
       hpAdjusted = hp - startingHP;
@@ -2557,7 +2581,12 @@ void ActiveEntityState::AdjustStats(
       }
 
       // Floor at max increase from default run speed
-      const static int16_t MAX_SUM = (int16_t)SVR_CONST.MAX_MOVE_INCREASE_SUM;
+      int16_t MAX_SUM = (int16_t)SVR_CONST.MAX_MOVE_INCREASE_SUM;
+      if (auto server = ChannelServer::GetInstance()) {
+        if (auto sharedConfig = server->GetWorldSharedConfig()) {
+          MAX_SUM = (int16_t)sharedConfig->GetMaxMoveIncreaseSum();
+        }
+      }
       if (maxSpeed < MAX_SUM) {
         maxSpeed = MAX_SUM;
       }

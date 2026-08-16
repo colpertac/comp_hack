@@ -6257,8 +6257,13 @@ void SkillManager::HandleKills(
         lootBody->SetValidLooterIDs(validLooterIDs);
 
         if (timedAdjust) {
-          // The last 60 seconds are fair game for everyone
-          uint64_t delayedlootTime = (uint64_t)(now + 60000000);
+          // Restricted ownership ends after LootRestrictedDuration seconds
+          // (default 60); remaining time is free loot for everyone
+          uint64_t delayedlootTime =
+              (uint64_t)(now +
+                         (uint64_t)server->GetWorldSharedConfig()
+                                 ->GetLootRestrictedDuration() *
+                             1000000ULL);
           delayedLootEntityIDs[delayedlootTime].push_back(lootEntityID);
         }
       }
@@ -6267,13 +6272,20 @@ void SkillManager::HandleKills(
       auto dDrops = drops[(uint8_t)objects::DropSet::Type_t::DESTINY];
 
       uint64_t lootTime = 0;
+      auto sharedConfig = server->GetWorldSharedConfig();
       if (characterManager->CreateLootFromDrops(lootBody, nDrops, luck, false,
                                                 maccaRate, magRate)) {
-        // Bodies remain lootable for 120 seconds with loot
-        lootTime = (uint64_t)(now + 120000000);
+        // Bodies remain lootable for LootBodyDuration seconds with loot
+        lootTime =
+            (uint64_t)(now +
+                       (uint64_t)sharedConfig->GetLootBodyDuration() *
+                           1000000ULL);
       } else {
-        // Bodies remain visible for 10 seconds without loot
-        lootTime = (uint64_t)(now + 10000000);
+        // Bodies remain visible for LootBodyEmptyDuration without loot
+        lootTime =
+            (uint64_t)(now +
+                       (uint64_t)sharedConfig->GetLootBodyEmptyDuration() *
+                           1000000ULL);
       }
 
       lootBody->SetLootTime(lootTime);
@@ -7460,11 +7472,18 @@ void SkillManager::HandleNegotiations(
       uint64_t lootTime = 0;
       uint64_t delayedLootTime = 0;
       if (lootBox->GetType() == objects::LootBox::Type_t::EGG) {
-        // Demon eggs remain lootable for 300 seconds
-        lootTime = (uint64_t)(now + 300000000);
+        auto sharedConfig = server->GetWorldSharedConfig();
+        // Demon eggs remain lootable for LootEggDuration seconds
+        lootTime =
+            (uint64_t)(now +
+                       (uint64_t)sharedConfig->GetLootEggDuration() *
+                           1000000ULL);
 
-        // Free loot starts 120 seconds in
-        delayedLootTime = (uint64_t)(now + 120000000);
+        // Party free-for-all starts after LootEggRestrictedDuration
+        delayedLootTime =
+            (uint64_t)(now +
+                       (uint64_t)sharedConfig->GetLootEggRestrictedDuration() *
+                           1000000ULL);
       } else {
         // Gift boxes remain lootable for 120 seconds
         lootTime = (uint64_t)(now + 120000000);
@@ -7474,8 +7493,12 @@ void SkillManager::HandleNegotiations(
               objects::Party::DropRule_t::FREE_LOOT) {
             lootBox->SetValidLooterIDs(sourcePartyMembers);
           } else {
-            // Free loot starts 60 seconds in
-            delayedLootTime = (uint64_t)(now + 60000000);
+            // Free loot starts after LootRestrictedDuration seconds
+            delayedLootTime =
+                (uint64_t)(now +
+                           (uint64_t)server->GetWorldSharedConfig()
+                                   ->GetLootRestrictedDuration() *
+                               1000000ULL);
           }
         }
       }
@@ -10773,7 +10796,9 @@ bool SkillManager::RandomItem(
   std::unordered_map<uint32_t, uint32_t> items;
   items[drop->GetItemType()] = count;
 
-  characterManager->AddRemoveItems(client, items, true);
+  // Skip AutoCompressCurrency so decompress gifts (e.g. 50000 apples) are
+  // not immediately turned back into the compressed item that was just used.
+  characterManager->AddRemoveItems(client, items, true, 0, false);
 
   ProcessSkillResult(activated, ctx);
 

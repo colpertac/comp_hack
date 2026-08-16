@@ -48,6 +48,9 @@
 #include "CharacterManager.h"
 #include "ZoneManager.h"
 
+// object Includes
+#include <WorldSharedConfig.h>
+
 using namespace channel;
 
 bool Parsers::LootItem::Parse(
@@ -193,9 +196,13 @@ bool Parsers::LootItem::Parse(
 
       auto zoneManager = server->GetZoneManager();
       if (lBox->GetType() == objects::LootBox::Type_t::BODY) {
-        // Bodies get removed 10 seconds after theyve been looted, or after
-        // their loot time has passed, whichever comes first
-        uint64_t removeTime = ChannelServer::GetServerTime() + 10000000;
+        // Bodies get removed after LootBodyPostLootRemove seconds once empty,
+        // or after their loot time has passed, whichever comes first
+        uint64_t removeDelay =
+            (uint64_t)server->GetWorldSharedConfig()
+                ->GetLootBodyPostLootRemove() *
+            1000000ULL;
+        uint64_t removeTime = ChannelServer::GetServerTime() + removeDelay;
         zoneManager->ScheduleEntityRemoval(removeTime, zone, entityIDs, 13);
       } else {
         int32_t removeMode = 0;

@@ -403,13 +403,15 @@ class CharacterManager {
    *  be removed
    * @param skillTargetID Object ID of an item used for a skill. If
    *  this is specified for a remove command, it will be removed first
+   * @param allowCompress When adding, if false skip AutoCompressCurrency
+   *  so decompress gifts are not immediately recompressed
    * @return true if the items were added, false if one or more couldn't
    *  be added
    */
   bool AddRemoveItems(
       const std::shared_ptr<channel::ChannelClientConnection>& client,
       std::unordered_map<uint32_t, uint32_t> itemCounts, bool add,
-      int64_t skillTargetID = 0);
+      int64_t skillTargetID = 0, bool allowCompress = true);
 
   /**
    * Get the total macca amount from the supplied character's inventory
