@@ -8,6 +8,7 @@ binaries/
 binaries32/
 binaries64/
 .run/
+runtime/
 
 *.sublime-project
 

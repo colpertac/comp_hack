@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
-# Shared paths and helpers for COMP_hack local/systemd tooling.
+# Shared paths and helpers for COMP_hack local tooling.
+#
+# Portable layout (Minecraft-style): everything under $ROOT_DIR/runtime/
+#   runtime/config/     lobby.xml, world.xml, channel.xml, constants.xml, …
+#   runtime/database/   SQLite files
+#   runtime/datastore/  server content + packages + BinaryData
+#   runtime/webroot/
+#   runtime/logs/
+#
+# Override with CONFIG_DIR / DATA_ROOT / LOG_DIR / RUNTIME_DIR if needed.
 
 set -euo pipefail
 
@@ -11,9 +20,10 @@ BIN_DIR="${BIN_DIR:-${BUILD_DIR}/bin}"
 RUN_DIR="${RUN_DIR:-${ROOT_DIR}/.run}"
 LOCAL_LOG_DIR="${LOCAL_LOG_DIR:-${RUN_DIR}/logs}"
 
-CONFIG_DIR="${CONFIG_DIR:-/etc/comp_hack}"
-DATA_ROOT="${DATA_ROOT:-/var/lib/comp_hack}"
-LOG_DIR="${LOG_DIR:-/var/log/comp_hack}"
+RUNTIME_DIR="${RUNTIME_DIR:-${ROOT_DIR}/runtime}"
+CONFIG_DIR="${CONFIG_DIR:-${RUNTIME_DIR}/config}"
+DATA_ROOT="${DATA_ROOT:-${RUNTIME_DIR}}"
+LOG_DIR="${LOG_DIR:-${RUNTIME_DIR}/logs}"
 DATABASE_DIR="${DATABASE_DIR:-${DATA_ROOT}/database}"
 DATASTORE_DIR="${DATASTORE_DIR:-${DATA_ROOT}/datastore}"
 WEBROOT_DIR="${WEBROOT_DIR:-${DATA_ROOT}/webroot}"
@@ -36,17 +46,7 @@ info() {
   echo "==> $*"
 }
 
-require_root() {
-  if [[ "${EUID}" -ne 0 ]]; then
-    die "run this script with sudo"
-  fi
-}
-
-ensure_dirs_owned_by_user() {
-  local user="${SUDO_USER:-${USER}}"
-  local group
-  group="$(id -gn "${user}")"
-
+ensure_runtime_dirs() {
   mkdir -p \
     "${CONFIG_DIR}" \
     "${DATABASE_DIR}" \
@@ -55,12 +55,11 @@ ensure_dirs_owned_by_user() {
     "${LOG_DIR}" \
     "${RUN_DIR}" \
     "${LOCAL_LOG_DIR}"
+}
 
-  chown -R "${user}:${group}" \
-    "${CONFIG_DIR}" \
-    "${DATA_ROOT}" \
-    "${LOG_DIR}" \
-    "${RUN_DIR}"
+# Kept for older docs that mentioned sudo /etc installs; no longer required.
+ensure_dirs_owned_by_user() {
+  ensure_runtime_dirs
 }
 
 bin_path() {
@@ -71,6 +70,16 @@ bin_path() {
 pid_file() {
   local name="$1"
   echo "${RUN_DIR}/${name}.pid"
+}
+
+config_file_for() {
+  local name="$1"
+  case "${name}" in
+    comp_lobby) echo "${CONFIG_DIR}/lobby.xml" ;;
+    comp_world) echo "${CONFIG_DIR}/world.xml" ;;
+    comp_channel) echo "${CONFIG_DIR}/channel.xml" ;;
+    *) die "unknown service: ${name}" ;;
+  esac
 }
 
 is_running_pid() {

@@ -36,14 +36,18 @@ EXTERNAL_IP=127.0.0.1 ./scripts/setup.sh
 
 ## Paths
 
+Portable **runtime root** (no `/etc` or `/var` required):
+
 | Path | Purpose |
 |------|---------|
 | `build-current/bin/comp_*` | Built binaries |
-| `/etc/comp_hack/` | Config, `constants.xml`, and `newcharacter.xml` |
-| `/var/lib/comp_hack/datastore` | Server content + client BinaryData/QMP |
-| `/var/lib/comp_hack/database` | SQLite databases |
-| `/var/log/comp_hack/` | Server log files |
+| `runtime/config/` | Config, `constants.xml`, `newcharacter.xml` |
+| `runtime/datastore/` | Server content + client BinaryData/QMP |
+| `runtime/database/` | SQLite databases |
+| `runtime/logs/` | Server log files |
 | `.run/` | Local pid files / stdout captures |
+
+Migrate an old FHS install once: `./scripts/migrate-runtime.sh`
 
 ## Optional: systemd (boot + auto-restart)
 

@@ -39,6 +39,7 @@ status_one() {
 }
 
 echo "BIN_DIR=${BIN_DIR}"
+echo "RUNTIME_DIR=${RUNTIME_DIR}"
 echo "CONFIG_DIR=${CONFIG_DIR}"
 echo
 status_one comp_lobby 10666

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start lobby -> world -> channel using built binaries.
+# Start lobby -> world -> channel using built binaries and runtime/ configs.
 
 set -euo pipefail
 
@@ -9,18 +9,20 @@ source "${SCRIPT_DIR}/common.sh"
 
 need_cmd ss
 
-mkdir -p "${RUN_DIR}" "${LOCAL_LOG_DIR}"
+ensure_runtime_dirs
 
 start_one() {
   local name="$1"
   local port="$2"
-  local bin pidfile logfile pid
+  local bin pidfile logfile pid cfg
 
   bin="$(bin_path "${name}")"
   pidfile="$(pid_file "${name}")"
   logfile="${LOCAL_LOG_DIR}/${name}.out"
+  cfg="$(config_file_for "${name}")"
 
   [[ -x "${bin}" ]] || die "missing binary: ${bin} (run scripts/build.sh first)"
+  [[ -f "${cfg}" ]] || die "missing config: ${cfg} (run scripts/setup.sh or migrate-runtime.sh)"
 
   if [[ -f "${pidfile}" ]]; then
     pid="$(cat "${pidfile}")"
@@ -31,16 +33,19 @@ start_one() {
     rm -f "${pidfile}"
   fi
 
-  info "starting ${name}"
-  # Default config path on Linux is /etc/comp_hack/
-  nohup "${bin}" >"${logfile}" 2>&1 &
-  pid=$!
-  echo "${pid}" >"${pidfile}"
+  info "starting ${name} (cwd=${RUNTIME_DIR}, config=${cfg})"
+  # cwd = runtime/ so relative paths in XML (database/, datastore, logs/) resolve.
+  (
+    cd "${RUNTIME_DIR}"
+    nohup "${bin}" "${cfg}" >"${logfile}" 2>&1 &
+    echo $! >"${pidfile}"
+  )
+  pid="$(cat "${pidfile}")"
 
   sleep 1
   if ! is_running_pid "${pid}"; then
     rm -f "${pidfile}"
-    die "${name} exited immediately; see ${logfile} and ${LOG_DIR}/${name/comp_/}.log"
+    die "${name} exited immediately; see ${logfile} and ${LOG_DIR}/"
   fi
 
   if ! wait_for_port "${port}" 25; then
@@ -54,6 +59,6 @@ start_one comp_lobby 10666
 start_one comp_world 18666
 start_one comp_channel 14666
 
-info "all servers started"
+info "all servers started (runtime=${RUNTIME_DIR})"
 echo "  logs: ${LOCAL_LOG_DIR}/*.out and ${LOG_DIR}/*.log"
 echo "  stop: ${SCRIPT_DIR}/stop.sh"

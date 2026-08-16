@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create config/data directories and install content for a local COMP_hack server.
+# Create portable runtime/ under the repo (no /etc or /var required).
 
 set -euo pipefail
 
@@ -10,22 +10,8 @@ source "${SCRIPT_DIR}/common.sh"
 FORCE_CONFIG="${FORCE_CONFIG:-0}"
 COPY_CLIENT_DATA="${COPY_CLIENT_DATA:-1}"
 
-info "Creating runtime directories"
-if [[ "${EUID}" -eq 0 ]]; then
-  ensure_dirs_owned_by_user
-else
-  sudo mkdir -p \
-    "${CONFIG_DIR}" \
-    "${DATABASE_DIR}" \
-    "${DATASTORE_DIR}" \
-    "${WEBROOT_DIR}" \
-    "${LOG_DIR}"
-  sudo chown -R "${USER}:$(id -gn)" \
-    "${CONFIG_DIR}" \
-    "${DATA_ROOT}" \
-    "${LOG_DIR}"
-  mkdir -p "${RUN_DIR}" "${LOCAL_LOG_DIR}"
-fi
+info "Creating runtime directories under ${RUNTIME_DIR}"
+ensure_runtime_dirs
 
 install_config_file() {
   local src="$1"
@@ -38,19 +24,34 @@ install_config_file() {
   info "installed ${dest}"
 }
 
-info "Installing config templates"
+info "Installing config templates (relative paths for runtime/)"
 install_config_file "${ROOT_DIR}/contrib/nixconfig/lobby.xml" "${CONFIG_DIR}/lobby.xml"
 install_config_file "${ROOT_DIR}/contrib/nixconfig/world.xml" "${CONFIG_DIR}/world.xml"
 install_config_file "${ROOT_DIR}/contrib/nixconfig/channel.xml" "${CONFIG_DIR}/channel.xml"
 install_config_file "${ROOT_DIR}/contrib/nixconfig/setup.xml" "${CONFIG_DIR}/setup.xml"
 install_config_file "${ROOT_DIR}/contrib/testing/config/constants.xml" "${CONFIG_DIR}/constants.xml"
-# Starting skills (Rest/Summon/Basic Attack/etc). Without this, new characters
-# cannot sit, summon, or use the basic skill bar.
 install_config_file "${ROOT_DIR}/contrib/winconfig/newcharacter.xml" \
   "${CONFIG_DIR}/newcharacter.xml"
 
+# Ensure configs use portable relative paths (rewrite if someone copied old /etc files).
+rewrite_runtime_paths() {
+  local f="$1"
+  [[ -f "${f}" ]] || return 0
+  sed -i \
+    -e 's|/var/lib/comp_hack/database/|database/|g' \
+    -e 's|/var/lib/comp_hack/datastore|datastore|g' \
+    -e 's|/var/lib/comp_hack/webroot|webroot|g' \
+    -e 's|/var/log/comp_hack/lobby.log|logs/lobby.log|g' \
+    -e 's|/var/log/comp_hack/world.log|logs/world.log|g' \
+    -e 's|/var/log/comp_hack/channel.log|logs/channel.log|g' \
+    "${f}"
+}
+
+rewrite_runtime_paths "${CONFIG_DIR}/lobby.xml"
+rewrite_runtime_paths "${CONFIG_DIR}/world.xml"
+rewrite_runtime_paths "${CONFIG_DIR}/channel.xml"
+
 if ! grep -q 'ExternalIP' "${CONFIG_DIR}/channel.xml"; then
-  # Insert ExternalIP before closing </object>
   sed -i "s|</object>|        <member name=\"ExternalIP\">${EXTERNAL_IP}</member>\n    </object>|" \
     "${CONFIG_DIR}/channel.xml"
   info "set ExternalIP=${EXTERNAL_IP} in channel.xml"
@@ -78,19 +79,16 @@ if [[ "${COPY_CLIENT_DATA}" == "1" ]]; then
   [[ -d "${CLIENT_DIR}/Map/Zone/Model" ]] || die "client Map/Zone/Model not found at ${CLIENT_DIR}/Map/Zone/Model"
 
   info "Copying client BinaryData from ${CLIENT_DIR}"
+  mkdir -p "${DATASTORE_DIR}/BinaryData"
   rsync -a "${CLIENT_DIR}/BinaryData/" "${DATASTORE_DIR}/BinaryData/"
 
-  info "Copying QMP map models"
+  info "Copying zone models"
   mkdir -p "${DATASTORE_DIR}/Map/Zone/Model"
   rsync -a "${CLIENT_DIR}/Map/Zone/Model/" "${DATASTORE_DIR}/Map/Zone/Model/"
 fi
 
 info "Setup complete"
-echo "  config:    ${CONFIG_DIR}"
-echo "  datastore: ${DATASTORE_DIR}"
-echo "  database:  ${DATABASE_DIR}"
-echo "  webroot:   ${WEBROOT_DIR}"
-echo "  logs:      ${LOG_DIR}"
-echo
-echo "Default admin account is in ${CONFIG_DIR}/setup.xml (usually admin / admin123)."
-echo "Edit that before first lobby start if you want a different password."
+echo "  runtime: ${RUNTIME_DIR}"
+echo "  config:  ${CONFIG_DIR}"
+echo "  start:   ${SCRIPT_DIR}/start.sh"
+echo "  (no /etc/comp_hack or /var/lib/comp_hack required)"
