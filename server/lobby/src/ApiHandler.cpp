@@ -29,6 +29,7 @@
 // libcomp Includes
 #include <AccountManager.h>
 #include <cstring>
+#include <cstdlib>
 #include <BaseServer.h>
 #include <CString.h>
 #include <Crypto.h>
@@ -81,8 +82,13 @@ ApiHandler::ApiHandler(const std::shared_ptr<objects::LobbyConfig>& config,
   mParsers["/account/get_cp"] = &ApiHandler::Account_GetCP;
   mParsers["/account/get_details"] = &ApiHandler::Account_GetDetails;
   mParsers["/account/change_password"] = &ApiHandler::Account_ChangePassword;
+  mParsers["/account/change_display_name"] =
+      &ApiHandler::Account_ChangeDisplayName;
+  mParsers["/account/change_email"] = &ApiHandler::Account_ChangeEmail;
   mParsers["/account/client_login"] = &ApiHandler::Account_ClientLogin;
   mParsers["/account/register"] = &ApiHandler::Account_Register;
+  mParsers["/account/recovery_email"] = &ApiHandler::Account_RecoveryEmail;
+  mParsers["/account/reset_password"] = &ApiHandler::Account_ResetPassword;
   mParsers["/admin/get_accounts"] = &ApiHandler::Admin_GetAccounts;
   mParsers["/admin/get_account"] = &ApiHandler::Admin_GetAccount;
   mParsers["/admin/delete_account"] = &ApiHandler::Admin_DeleteAccount;
@@ -323,6 +329,80 @@ bool ApiHandler::Account_ChangePassword(
   return true;
 }
 
+bool ApiHandler::Account_ChangeDisplayName(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    const std::shared_ptr<ApiSession>& session) {
+  auto db = GetDatabase();
+  auto account = objects::Account::LoadAccountByUsername(db, session->username);
+
+  if (!account) {
+    response["error"] = "Account not found.";
+    return true;
+  }
+
+  auto it = request.find("disp_name");
+  if (it == request.end()) {
+    response["error"] = "Display name is missing.";
+    return true;
+  }
+
+  libcomp::String dispName = it->second.getString();
+  if (dispName.IsEmpty() || dispName.Length() > 32) {
+    response["error"] = "Bad display name";
+    return true;
+  }
+
+  account->SetDisplayName(dispName);
+
+  if (account->Update(db)) {
+    response["error"] = "Success";
+  } else {
+    response["error"] = "Failed to update display name.";
+  }
+
+  return true;
+}
+
+bool ApiHandler::Account_ChangeEmail(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    const std::shared_ptr<ApiSession>& session) {
+  auto db = GetDatabase();
+  auto account = objects::Account::LoadAccountByUsername(db, session->username);
+
+  if (!account) {
+    response["error"] = "Account not found.";
+    return true;
+  }
+
+  libcomp::String email;
+  auto it = request.find("email");
+  if (it != request.end()) {
+    email = it->second.getString();
+  }
+
+  if (!AssignAccountEmail(account, email, response)) {
+    return true;
+  }
+
+  if (!IsPlaceholderEmail(account->GetEmail(), account->GetUsername())) {
+    auto existing =
+        objects::Account::LoadAccountByEmail(db, account->GetEmail());
+    if (existing && existing->GetUsername().ToLower() !=
+                        account->GetUsername().ToLower()) {
+      response["error"] = "Email in use";
+      return true;
+    }
+  }
+
+  if (account->Update(db)) {
+    response["error"] = "Success";
+  } else {
+    response["error"] = "Failed to update email.";
+  }
+
+  return true;
+}
+
 bool ApiHandler::Account_ClientLogin(
     const JsonBox::Object& request, JsonBox::Object& response,
     const std::shared_ptr<ApiSession>& session) {
@@ -414,7 +494,8 @@ bool ApiHandler::Account_Register(const JsonBox::Object& request,
     password = it->second.getString();
   }
 
-  if (username.IsEmpty() || email.IsEmpty() || password.IsEmpty()) {
+  // Email is optional; empty → unique placeholder (Email is a DB key).
+  if (username.IsEmpty() || password.IsEmpty()) {
     return false;
   }
 
@@ -427,32 +508,30 @@ bool ApiHandler::Account_Register(const JsonBox::Object& request,
     response["error"] = "Bad password";
 
     return true;
-  } else if (!email.Matches(
-                 "(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[a-z0-9!#$%&'*+/"
-                 "=?^_`{|}~-]+)*|\"(?:[\\x01-\\x08\\x0b\\x0c\\x0e-"
-                 "\\x1f\\x21\\x23-\\x5b\\x5d-\\x7f]|\\\\[\\x01-"
-                 "\\x09\\x0b\\x0c\\x0e-\\x7f])*\")@(?:(?:[a-z0-9](?:[a-z0-9-]*["
-                 "a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?|\\[(?:(?:25[0-"
-                 "5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(?:25[0-5]|2[0-4][0-9]"
-                 "|[01]?[0-9][0-9]?|[a-z0-9-]*[a-z0-9]:(?:[\\x01-"
-                 "\\x08\\x0b\\x0c\\x0e-\\x1f\\x21-\\x5a\\x53-\\x7f]|\\\\[\\x01-"
-                 "\\x09\\x0b\\x0c\\x0e-\\x7f])+)\\])")) {
-    // RFC 5322
-    response["error"] = "Bad email";
-
-    return true;
   }
 
   auto db = GetDatabase();
 
-  if (objects::Account::LoadAccountByUsername(db, username) ||
-      objects::Account::LoadAccountByEmail(db, email)) {
+  if (objects::Account::LoadAccountByUsername(db, username)) {
     response["error"] = "Account exists";
 
     return true;
   }
 
   std::shared_ptr<objects::Account> account(new objects::Account);
+  account->SetUsername(username);
+
+  if (!AssignAccountEmail(account, email, response)) {
+    return true;
+  }
+
+  // Duplicate real email check (placeholder is unique per username).
+  if (!IsPlaceholderEmail(account->GetEmail(), username) &&
+      objects::Account::LoadAccountByEmail(db, account->GetEmail())) {
+    response["error"] = "Account exists";
+
+    return true;
+  }
 
   libcomp::String displayName = username;
   libcomp::String salt = libcomp::Crypto::GenerateRandom(10);
@@ -464,9 +543,7 @@ bool ApiHandler::Account_Register(const JsonBox::Object& request,
   // Hash the password for database storage.
   password = libcomp::Crypto::HashPassword(password, salt);
 
-  account->SetUsername(username);
   account->SetDisplayName(displayName);
-  account->SetEmail(email);
   account->SetPassword(password);
   account->SetSalt(salt);
   account->SetCP(cp);
@@ -479,6 +556,134 @@ bool ApiHandler::Account_Register(const JsonBox::Object& request,
     response["error"] = "Failed to create account.";
   } else {
     response["error"] = "Success";
+  }
+
+  return true;
+}
+
+static bool VerifyWebsiteResetSecret(const JsonBox::Object& request,
+                                     JsonBox::Object& response) {
+  const char* expected = std::getenv("COMP_RESET_SECRET");
+  if (!expected || !expected[0]) {
+    response["error"] = "Password reset disabled";
+    return false;
+  }
+
+  auto it = request.find("reset_secret");
+  if (it == request.end()) {
+    response["error"] = "Unauthorized";
+    return false;
+  }
+
+  libcomp::String provided = it->second.getString();
+  if (provided != libcomp::String(expected)) {
+    response["error"] = "Unauthorized";
+    return false;
+  }
+
+  return true;
+}
+
+bool ApiHandler::Account_RecoveryEmail(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    const std::shared_ptr<ApiSession>& session) {
+  (void)session;
+
+  if (!VerifyWebsiteResetSecret(request, response)) {
+    return true;
+  }
+
+  libcomp::String username;
+  auto it = request.find("username");
+  if (it != request.end()) {
+    username = libcomp::String(it->second.getString()).ToLower();
+  }
+
+  if (username.IsEmpty()) {
+    response["error"] = "Username not found.";
+    return true;
+  }
+
+  auto account =
+      objects::Account::LoadAccountByUsername(GetDatabase(), username);
+  if (!account || !account->GetEnabled()) {
+    response["error"] = "Account not found.";
+    return true;
+  }
+
+  libcomp::String email = account->GetEmail();
+  response["username"] = account->GetUsername().ToUtf8();
+  if (IsPlaceholderEmail(email, account->GetUsername())) {
+    response["email"] = "";
+  } else {
+    response["email"] = email.ToUtf8();
+  }
+  response["error"] = "Success";
+  return true;
+}
+
+bool ApiHandler::Account_ResetPassword(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    const std::shared_ptr<ApiSession>& session) {
+  (void)session;
+
+  if (!VerifyWebsiteResetSecret(request, response)) {
+    return true;
+  }
+
+  libcomp::String username;
+  auto it = request.find("username");
+  if (it != request.end()) {
+    username = libcomp::String(it->second.getString()).ToLower();
+  }
+
+  if (username.IsEmpty()) {
+    response["error"] = "Username not found.";
+    return true;
+  }
+
+  auto db = GetDatabase();
+  auto account = objects::Account::LoadAccountByUsername(db, username);
+  if (!account) {
+    response["error"] = "Account not found.";
+    return true;
+  }
+
+  it = request.find("password");
+  if (it == request.end()) {
+    response["error"] = "Password is missing.";
+    return true;
+  }
+
+  libcomp::String password = it->second.getString();
+  if (!password.Matches(
+          "^[a-zA-Z0-9\\\\\\(\\)\\[\\]\\/{}~`'\"<>.,_|!@#$%^&*+=-]{6,16}$")) {
+    response["error"] = "Bad password";
+    return true;
+  }
+
+  libcomp::String salt = libcomp::Crypto::GenerateRandom(10);
+  password = libcomp::Crypto::HashPassword(password, salt);
+  account->SetPassword(password);
+  account->SetSalt(salt);
+
+  bool didUpdate = account->Update(db);
+
+  // Drop any in-memory API session for this account.
+  {
+    std::lock_guard<std::mutex> guard(mSessionLock);
+    auto sessionIterator = mSessions.find(username);
+    if (sessionIterator != mSessions.end()) {
+      sessionIterator->second->username.Clear();
+      sessionIterator->second->account.reset();
+      mSessions.erase(sessionIterator);
+    }
+  }
+
+  if (didUpdate) {
+    response["error"] = "Success";
+  } else {
+    response["error"] = "Failed to update password.";
   }
 
   return true;
@@ -726,6 +931,37 @@ bool ApiHandler::Admin_UpdateAccount(
 
   if (it != request.end()) {
     account->SetEnabled(it->second.getBoolean());
+  }
+
+  it = request.find("email");
+
+  if (it != request.end()) {
+    libcomp::String newEmail = it->second.getString();
+    if (!AssignAccountEmail(account, newEmail, response)) {
+      return true;
+    }
+
+    if (!IsPlaceholderEmail(account->GetEmail(), account->GetUsername())) {
+      auto existing =
+          objects::Account::LoadAccountByEmail(GetDatabase(), account->GetEmail());
+      if (existing && existing->GetUsername().ToLower() !=
+                          account->GetUsername().ToLower()) {
+        response["error"] = "Email in use";
+        return true;
+      }
+    }
+  }
+
+  it = request.find("ban_reason");
+
+  if (it != request.end()) {
+    account->SetBanReason(it->second.getString());
+  }
+
+  it = request.find("ban_initiator");
+
+  if (it != request.end()) {
+    account->SetBanInitiator(it->second.getString());
   }
 
   auto db = GetDatabase();
@@ -1946,6 +2182,7 @@ bool ApiHandler::handlePost(CivetServer* pServer,
   const JsonBox::Object& obj = request.getObject();
 
   if (method == "/account/change_password" || method == "/account/register" ||
+      method == "/account/reset_password" ||
       method == "/admin/update_account") {
     // Do not print post data as these contain passwords
     auto it = obj.find("username");
@@ -2002,7 +2239,9 @@ bool ApiHandler::handlePost(CivetServer* pServer,
   } else {
     auto usernameIterator = obj.find("session_username");
 
-    if ("/auth/get_challenge" == method || "/account/register" == method) {
+    if ("/auth/get_challenge" == method || "/account/register" == method ||
+        "/account/recovery_email" == method ||
+        "/account/reset_password" == method) {
       usernameIterator = obj.find("username");
     }
 
@@ -2029,6 +2268,8 @@ bool ApiHandler::handlePost(CivetServer* pServer,
       }
 
       if ("/auth/get_challenge" == method || "/account/register" == method ||
+          "/account/recovery_email" == method ||
+          "/account/reset_password" == method ||
           (Authenticate(obj, response, session) && session->account)) {
         if ("/admin/" != method.Left(strlen("/admin/")) ||
             session->account->GetUserLevel() >= 1000) {
@@ -2092,8 +2333,15 @@ bool ApiHandler::handlePost(CivetServer* pServer,
     std::lock_guard<std::mutex> guard(*session->requestLock);
 
     if (!it->second(*this, obj, response, session)) {
-      mg_printf(pConnection,
-                "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+      // get_challenge fails for missing/disabled accounts — treat as auth
+      // failure (401), not a malformed request (400).
+      if ("/auth/get_challenge" == method) {
+        mg_printf(pConnection,
+                  "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      } else {
+        mg_printf(pConnection,
+                  "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+      }
 
       return true;
     }
@@ -2197,17 +2445,62 @@ bool ApiHandler::HaveUserLevel(JsonBox::Object& response,
                                const std::shared_ptr<ApiSession>& session,
                                uint32_t requiredLevel) {
   auto account = session ? session->account : nullptr;
-  int32_t currentLevel = account ? account->GetUserLevel() : 0;
-  if (currentLevel < (int32_t)requiredLevel) {
-    response["error"] = libcomp::String(
-                            "Requested command requires a user level of at "
-                            "least %1. Session level is only %2.")
-                            .Arg(requiredLevel)
-                            .Arg(currentLevel)
-                            .ToUtf8();
+  int32_t userLevel = account ? account->GetUserLevel() : 0;
 
+  if (userLevel < (int32_t)requiredLevel) {
+    response["error"] = libcomp::String("User level %1 required (have %2).")
+                            .Arg(requiredLevel)
+                            .Arg(userLevel)
+                            .ToUtf8();
     return false;
   }
 
+  return true;
+}
+
+bool ApiHandler::IsValidEmail(const libcomp::String& email) {
+  // RFC 5322 (same pattern as legacy register validation)
+  return email.Matches(
+      "(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[a-z0-9!#$%&'*+/"
+      "=?^_`{|}~-]+)*|\"(?:[\\x01-\\x08\\x0b\\x0c\\x0e-"
+      "\\x1f\\x21\\x23-\\x5b\\x5d-\\x7f]|\\\\[\\x01-"
+      "\\x09\\x0b\\x0c\\x0e-\\x7f])*\")@(?:(?:[a-z0-9](?:[a-z0-9-]*["
+      "a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?|\\[(?:(?:25[0-"
+      "5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(?:25[0-5]|2[0-4][0-9]"
+      "|[01]?[0-9][0-9]?|[a-z0-9-]*[a-z0-9]:(?:[\\x01-"
+      "\\x08\\x0b\\x0c\\x0e-\\x1f\\x21-\\x5a\\x53-\\x7f]|\\\\[\\x01-"
+      "\\x09\\x0b\\x0c\\x0e-\\x7f])+)\\])");
+}
+
+libcomp::String ApiHandler::PlaceholderEmail(const libcomp::String& username) {
+  return libcomp::String("noreply+%1@local.invalid").Arg(username.ToLower());
+}
+
+bool ApiHandler::IsPlaceholderEmail(const libcomp::String& email,
+                                    const libcomp::String& username) {
+  return email == PlaceholderEmail(username);
+}
+
+bool ApiHandler::AssignAccountEmail(
+    const std::shared_ptr<objects::Account>& account, libcomp::String email,
+    JsonBox::Object& response) {
+  email = email.ToLower().Trimmed();
+
+  if (email.IsEmpty()) {
+    account->SetEmail(PlaceholderEmail(account->GetUsername().IsEmpty()
+                                           ? libcomp::String("unknown")
+                                           : account->GetUsername()));
+    // Username may not be set yet during register — caller sets username first
+    // when needed; register path sets username before calling with placeholder
+    // built from the request username via SetEmail directly after.
+    return true;
+  }
+
+  if (!IsValidEmail(email)) {
+    response["error"] = "Bad email";
+    return false;
+  }
+
+  account->SetEmail(email);
   return true;
 }

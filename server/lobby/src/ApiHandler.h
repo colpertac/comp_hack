@@ -111,12 +111,24 @@ class ApiHandler : public CivetHandler {
   bool Account_ChangePassword(const JsonBox::Object& request,
                               JsonBox::Object& response,
                               const std::shared_ptr<ApiSession>& session);
+  bool Account_ChangeDisplayName(const JsonBox::Object& request,
+                                 JsonBox::Object& response,
+                                 const std::shared_ptr<ApiSession>& session);
+  bool Account_ChangeEmail(const JsonBox::Object& request,
+                           JsonBox::Object& response,
+                           const std::shared_ptr<ApiSession>& session);
   bool Account_ClientLogin(const JsonBox::Object& request,
                            JsonBox::Object& response,
                            const std::shared_ptr<ApiSession>& session);
   bool Account_Register(const JsonBox::Object& request,
                         JsonBox::Object& response,
                         const std::shared_ptr<ApiSession>& session);
+  bool Account_RecoveryEmail(const JsonBox::Object& request,
+                             JsonBox::Object& response,
+                             const std::shared_ptr<ApiSession>& session);
+  bool Account_ResetPassword(const JsonBox::Object& request,
+                             JsonBox::Object& response,
+                             const std::shared_ptr<ApiSession>& session);
 
   bool Admin_GetAccounts(const JsonBox::Object& request,
                          JsonBox::Object& response,
@@ -193,6 +205,14 @@ class ApiHandler : public CivetHandler {
   bool HaveUserLevel(JsonBox::Object& response,
                      const std::shared_ptr<ApiSession>& session,
                      uint32_t requiredLevel);
+
+  static bool IsValidEmail(const libcomp::String& email);
+  static libcomp::String PlaceholderEmail(const libcomp::String& username);
+  static bool IsPlaceholderEmail(const libcomp::String& email,
+                                 const libcomp::String& username);
+  /// Returns false and sets response["error"] on invalid / duplicate email.
+  bool AssignAccountEmail(const std::shared_ptr<objects::Account>& account,
+                          libcomp::String email, JsonBox::Object& response);
 
   // List of API sessions.
   std::unordered_map<libcomp::String, std::shared_ptr<ApiSession>> mSessions;
