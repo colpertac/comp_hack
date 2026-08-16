@@ -127,6 +127,51 @@ class ChatManager {
       const std::shared_ptr<channel::ChannelClientConnection>& client,
       const libcomp::String& cmd, const std::list<libcomp::String>& args);
 
+  /**
+   * Apply another character's look onto an online mannequin client.
+   * Used by @copylook and the loopback studio HTTP API.
+   */
+  libcomp::String DressStudioMannequin(
+      const std::shared_ptr<channel::ChannelClientConnection>& mannequinClient,
+      const libcomp::String& sourceName, bool quiet);
+
+  /**
+   * Move an online mannequin into the portrait studio zone/position.
+   */
+  libcomp::String PoseStudioMannequin(
+      const std::shared_ptr<channel::ChannelClientConnection>& mannequinClient,
+      uint32_t zoneID, float x, float y);
+
+  /**
+   * Temporarily blank floating name + title for a clean portrait screenshot.
+   * Does not QueueUpdate (never persist blank name). Pair with RestoreStudioNameplate.
+   */
+  libcomp::String HideStudioNameplate(
+      const std::shared_ptr<channel::ChannelClientConnection>& mannequinClient);
+
+  /**
+   * Restore name/title after HideStudioNameplate.
+   */
+  libcomp::String RestoreStudioNameplate(
+      const std::shared_ptr<channel::ChannelClientConnection>& mannequinClient);
+
+  /**
+   * Resolve studio mannequin by account username first (vam/vaf), then
+   * character name. Survives temporary blank display names.
+   */
+  libcomp::String ResolveStudioMannequinClient(
+      const libcomp::String& mannequin,
+      std::shared_ptr<channel::ChannelClientConnection>& outClient);
+
+  /**
+   * Resolve character name → Character / Account / online client.
+   */
+  bool GetTargetCharacterAccount(
+      libcomp::String& targetName, bool currentOnly,
+      std::shared_ptr<objects::Character>& targetCharacter,
+      std::shared_ptr<objects::Account>& targetAccount,
+      std::shared_ptr<channel::ChannelClientConnection>& targetClient);
+
  private:
   /**
    * GM command to add CP to a target account.
@@ -179,8 +224,8 @@ class ChatManager {
       const std::list<libcomp::String>& args);
 
   /**
-   * GM command to scrap every unequipped inventory item (keeps gear
-   * that is currently equipped, including COMP).
+   * GM command to wipe inventory: unequip all gear except COMP, then
+   * scrap every inventory item that is not the COMP.
    * @param client Pointer to the client that sent the command
    * @param args Unused
    * @return true if the command was handled properly, else false
@@ -836,25 +881,6 @@ class ChatManager {
   bool HaveUserLevel(
       const std::shared_ptr<channel::ChannelClientConnection>& client,
       uint32_t requiredLevel);
-
-  /**
-   * Get channel accessible character, account and client pointers based
-   * upon the supplied character name. If the character's account is logged
-   * in as a different character on the channel, the client will still be
-   * returned unless otherwise specified.
-   * @param targetName Name of the character to retrieve information from
-   * @param currentOnly If true, the client will not be returned if the
-   *  account is logged into the channel but not as the specified character
-   * @param targetCharacter Output pointer to the retrieved character
-   * @param targetAccount Output pointer to the retrieved character's account
-   * @param targetClient Output pointer to the retrieved character's client
-   * @return true if the character and account exist, false if they do not
-   */
-  bool GetTargetCharacterAccount(
-      libcomp::String& targetName, bool currentOnly,
-      std::shared_ptr<objects::Character>& targetCharacter,
-      std::shared_ptr<objects::Account>& targetAccount,
-      std::shared_ptr<channel::ChannelClientConnection>& targetClient);
 
   /**
    * Get the valid equip type index associated to the next argument in a list

@@ -27,6 +27,7 @@
 // channel Includes
 #include "ChannelConfig.h"
 #include "ChannelServer.h"
+#include "StudioHandler.h"
 
 // libcomp Includes
 #include <Config.h>
@@ -36,6 +37,9 @@
 #include <PersistentObject.h>
 #include <ServerCommandLineParser.h>
 #include <Shutdown.h>
+
+// civetweb Includes
+#include <CivetServer.h>
 
 #if defined(_WIN32) && defined(WIN32_SERV)
 int ApplicationMain(int argc, const char *argv[])
@@ -99,11 +103,57 @@ int main(int argc, const char *argv[])
     return EXIT_FAILURE;
   }
 
+  // Optional loopback studio HTTP (portrait worker). Port 0 = disabled.
+  CivetServer* pStudioServer = nullptr;
+  channel::StudioHandler* pStudioHandler = nullptr;
+  {
+    auto chConfig = std::dynamic_pointer_cast<objects::ChannelConfig>(config);
+    uint16_t studioPort = chConfig ? chConfig->GetStudioHttpPort() : 0;
+    if (studioPort != 0) {
+      if (chConfig->GetStudioToken().IsEmpty()) {
+        LogGeneralWarningMsg(
+            "StudioHttpPort set but StudioToken empty — studio API disabled.\n");
+      } else {
+        std::vector<std::string> options;
+        options.push_back("listening_ports");
+        options.push_back(std::string("127.0.0.1:") +
+                          std::to_string(studioPort));
+        try {
+          pStudioHandler = new channel::StudioHandler(chConfig, server);
+          pStudioServer = new CivetServer(options);
+          pStudioServer->addHandler("/studio/health", pStudioHandler);
+          pStudioServer->addHandler("/studio/dress", pStudioHandler);
+          pStudioServer->addHandler("/studio/nameplate", pStudioHandler);
+          LogGeneralInfo([&]() {
+            return libcomp::String(
+                       "Studio API listening on 127.0.0.1:%1 "
+                       "(/studio/health, /studio/dress, /studio/nameplate)\n")
+                .Arg(studioPort);
+          });
+        } catch (const CivetException& e) {
+          LogGeneralError([&]() {
+            return libcomp::String("Failed to start studio HTTP: %1\n")
+                .Arg(e.what());
+          });
+          delete pStudioServer;
+          pStudioServer = nullptr;
+          delete pStudioHandler;
+          pStudioHandler = nullptr;
+        }
+      }
+    }
+  }
+
   // Set this for the signal handler.
   libcomp::Shutdown::Configure(server.get());
 
   // Start the main server loop (blocks until done).
   int returnCode = server->Start(true);
+
+  delete pStudioServer;
+  pStudioServer = nullptr;
+  delete pStudioHandler;
+  pStudioHandler = nullptr;
 
   // Complete the shutdown process.
   libcomp::Shutdown::Complete();

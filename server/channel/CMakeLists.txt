@@ -55,6 +55,7 @@ SET(${PROJECT_NAME}_SRCS
     src/ChannelSyncManager.cpp
     src/CharacterManager.cpp
     src/ChatManager.cpp
+    src/StudioHandler.cpp
     src/CharacterState.cpp
     src/ClientState.cpp
     src/CultureMachineState.cpp
@@ -95,6 +96,7 @@ SET(${PROJECT_NAME}_HDRS
     src/ChannelSyncManager.h
     src/CharacterManager.h
     src/ChatManager.h
+    src/StudioHandler.h
     src/CharacterState.h
     src/ClientState.h
     src/CultureMachineState.h
@@ -492,7 +494,7 @@ TARGET_INCLUDE_DIRECTORIES(${PROJECT_NAME} PRIVATE
 )
 
 TARGET_LINK_LIBRARIES(${PROJECT_NAME} ${CMAKE_THREAD_LIBS_INIT} config comp
-    tinyxml2 civetweb-cxx civetweb)
+    tinyxml2 civetweb-cxx civetweb jsonbox)
 
 IF(USE_COTIRE)
     cotire(${PROJECT_NAME})

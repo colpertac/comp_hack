@@ -78,6 +78,10 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <mutex>
+#include <set>
+#include <string>
+#include <unordered_map>
 
 // channel Includes
 #include "AccountManager.h"
@@ -93,6 +97,41 @@
 #include "ZoneManager.h"
 
 using namespace channel;
+
+namespace {
+
+struct StudioNameplateBackup {
+  libcomp::String name;
+  std::array<int16_t, 65> titles{};
+  uint8_t currentTitle = 0;
+  bool prioritized = false;
+};
+
+std::mutex gStudioNameplateMutex;
+std::unordered_map<std::string, StudioNameplateBackup> gStudioNameplateBackups;
+
+std::string StudioCharKey(const std::shared_ptr<objects::Character>& c) {
+  return c ? c->GetUUID().ToString() : "";
+}
+
+void CopyTitlesOut(const std::shared_ptr<objects::Character>& c,
+                   std::array<int16_t, 65>& out) {
+  auto src = c->GetCustomTitles();
+  for (size_t i = 0; i < out.size() && i < src.size(); ++i) {
+    out[i] = src[i];
+  }
+}
+
+void CopyTitlesIn(const std::shared_ptr<objects::Character>& c,
+                  const std::array<int16_t, 65>& in) {
+  auto titles = c->GetCustomTitles();
+  for (size_t i = 0; i < titles.size() && i < in.size(); ++i) {
+    titles[i] = in[i];
+  }
+  c->SetCustomTitles(titles);
+}
+
+}  // namespace
 
 ChatManager::ChatManager(const std::weak_ptr<ChannelServer>& server)
     : mServer(server) {
@@ -818,6 +857,8 @@ bool ChatManager::GMCommand_ClearInventory(
     return true;
   }
 
+  auto server = mServer.lock();
+  auto characterManager = server->GetCharacterManager();
   auto character = client->GetClientState()->GetCharacterState()->GetEntity();
   auto inventory = character ? character->GetItemBoxes(0).Get() : nullptr;
   if (!inventory) {
@@ -825,43 +866,54 @@ bool ChatManager::GMCommand_ClearInventory(
                            "@clearinventory failed: no inventory");
   }
 
+  const size_t COMP_SLOT =
+      (size_t)objects::MiItemBasicData::EquipType_t::EQUIP_TYPE_COMP;
+  auto comp = character->GetEquippedItems(COMP_SLOT).Get();
+
+  // Strip every equip slot except COMP so studio leftovers cannot stick.
+  uint32_t unequipped = 0;
+  for (size_t e = 0; e < 15; e++) {
+    if (e == COMP_SLOT) {
+      continue;
+    }
+    auto item = character->GetEquippedItems(e).Get();
+    if (!item) {
+      continue;
+    }
+    if (characterManager->UnequipItem(client, item)) {
+      unequipped++;
+    }
+  }
+
   std::list<std::shared_ptr<objects::Item>> insertItems;
   std::unordered_map<std::shared_ptr<objects::Item>, uint16_t> stackAdjust;
   uint32_t scrapped = 0;
   for (size_t i = 0; i < 50; i++) {
     auto item = inventory->GetItems(i).Get();
-    if (!item) {
-      continue;
-    }
-    bool equipped = false;
-    for (size_t e = 0; e < 15; e++) {
-      if (character->GetEquippedItems(e).Get() == item) {
-        equipped = true;
-        break;
-      }
-    }
-    if (equipped) {
+    if (!item || item == comp) {
       continue;
     }
     stackAdjust[item] = 0;
     scrapped++;
   }
 
-  if (!scrapped) {
+  if (!scrapped && !unequipped) {
     return SendChatMessage(client, ChatType_t::CHAT_SELF,
-                           "@clearinventory: nothing to scrap (equipped "
-                           "items kept)");
+                           "@clearinventory: already empty (COMP kept)");
   }
 
-  if (!mServer.lock()->GetCharacterManager()->UpdateItems(
-          client, false, insertItems, stackAdjust)) {
+  if (scrapped && !characterManager->UpdateItems(client, false, insertItems,
+                                                 stackAdjust)) {
     return SendChatMessage(client, ChatType_t::CHAT_SELF,
-                           "@clearinventory failed");
+                           "@clearinventory failed while scrapping");
   }
 
   return SendChatMessage(
       client, ChatType_t::CHAT_SELF,
-      libcomp::String("@clearinventory: scrapped %1 unequipped item(s)")
+      libcomp::String(
+          "@clearinventory: unequipped %1, scrapped %2 (COMP kept). "
+          "Use @va clear if VA should go too.")
+          .Arg(unequipped)
           .Arg(scrapped));
 }
 
@@ -954,22 +1006,34 @@ bool ChatManager::GMCommand_CopyLook(
                            "Usage: @copylook NAME");
   }
 
+  auto err = DressStudioMannequin(client, srcName, false);
+  if (!err.IsEmpty()) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF, err);
+  }
+  return true;
+}
+
+libcomp::String ChatManager::DressStudioMannequin(
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    const libcomp::String& sourceName, bool quiet) {
   auto server = mServer.lock();
-  auto state = client->GetClientState();
-  auto cState = state->GetCharacterState();
-  auto dest = cState->GetEntity();
-  if (!dest) {
-    return SendChatMessage(client, ChatType_t::CHAT_SELF,
-                           "@copylook failed: no character");
+  if (!server || !client) {
+    return "dress failed: no server/client";
   }
 
+  auto state = client->GetClientState();
+  auto cState = state ? state->GetCharacterState() : nullptr;
+  auto dest = cState ? cState->GetEntity() : nullptr;
+  if (!dest) {
+    return "dress failed: no character";
+  }
+
+  libcomp::String srcName = sourceName;
   std::shared_ptr<objects::Character> dbChar;
   std::shared_ptr<objects::Account> dbAcct;
   std::shared_ptr<ChannelClientConnection> srcClient;
   if (!GetTargetCharacterAccount(srcName, true, dbChar, dbAcct, srcClient)) {
-    return SendChatMessage(
-        client, ChatType_t::CHAT_SELF,
-        libcomp::String("@copylook: unknown character '%1'").Arg(srcName));
+    return libcomp::String("dress: unknown character '%1'").Arg(srcName);
   }
 
   std::shared_ptr<objects::Character> source;
@@ -985,22 +1049,19 @@ bool ChatManager::GMCommand_CopyLook(
     srcKind = "sqlite";
   }
   if (!source) {
-    return SendChatMessage(client, ChatType_t::CHAT_SELF,
-                           "@copylook failed: could not load source");
+    return "dress failed: could not load source";
   }
 
   if (source->GetGender() != dest->GetGender()) {
     auto genderName = [](objects::Character::Gender_t g) {
       return g == objects::Character::Gender_t::FEMALE ? "female" : "male";
     };
-    return SendChatMessage(
-        client, ChatType_t::CHAT_SELF,
-        libcomp::String(
-            "@copylook refused: '%1' is %2, you are %3. Gender is "
-            "not copied — use the matching mannequin.")
-            .Arg(source->GetName())
-            .Arg(genderName(source->GetGender()))
-            .Arg(genderName(dest->GetGender())));
+    return libcomp::String(
+               "dress refused: '%1' is %2, mannequin is %3. Gender is "
+               "not copied — use the matching mannequin.")
+        .Arg(source->GetName())
+        .Arg(genderName(source->GetGender()))
+        .Arg(genderName(dest->GetGender()));
   }
 
   dest->SetSkinType(source->GetSkinType());
@@ -1010,6 +1071,23 @@ bool ChatManager::GMCommand_CopyLook(
   dest->SetHairColor(source->GetHairColor());
   dest->SetLeftEyeColor(source->GetLeftEyeColor());
   dest->SetRightEyeColor(source->GetRightEyeColor());
+
+  // Floating nameplate: CustomTitles parts + which slot is active.
+  // @title ID only unlocks Progress titles — it does not set the plate.
+  dest->SetCustomTitles(source->GetCustomTitles());
+  dest->SetCurrentTitle(source->GetCurrentTitle());
+  dest->SetTitlePrioritized(source->GetTitlePrioritized());
+  {
+    std::set<int16_t> titleIDs;
+    for (int16_t part : source->GetCustomTitles()) {
+      if (part > 0) {
+        titleIDs.insert(part);
+      }
+    }
+    for (int16_t titleID : titleIDs) {
+      server->GetCharacterManager()->AddTitle(client, titleID);
+    }
+  }
 
   auto writeAppearance = [&](libcomp::Packet& pkt) {
     pkt.WriteU8(dest->GetSkinType());
@@ -1077,6 +1155,7 @@ bool ChatManager::GMCommand_CopyLook(
 
   client->FlushOutgoing();
   server->GetWorldDatabase()->QueueUpdate(dest, state->GetAccountUID());
+  server->GetCharacterManager()->SendCharacterTitle(client, true);
 
   auto zone = cState->GetZone();
   if (zone) {
@@ -1087,20 +1166,31 @@ bool ChatManager::GMCommand_CopyLook(
     server->GetZoneManager()->ShowEntityToZone(zone, cState->GetEntityID());
   }
 
-  SendChatMessage(
-      client, ChatType_t::CHAT_SELF,
-      libcomp::String("@copylook %1 → %2 (%3): skin=%4 hair=%5/%6 face=%7 "
-                      "eye=%8/%9/%10")
-          .Arg(source->GetName())
-          .Arg(dest->GetName())
-          .Arg(srcKind)
-          .Arg(dest->GetSkinType())
-          .Arg(dest->GetHairType())
-          .Arg(dest->GetHairColor())
-          .Arg(dest->GetFaceType())
-          .Arg(dest->GetEyeType())
-          .Arg(dest->GetLeftEyeColor())
-          .Arg(dest->GetRightEyeColor()));
+  if (!quiet) {
+    int16_t titlePart = -1;
+    size_t titleIdx =
+        (size_t)(dest->GetCurrentTitle() * MAX_TITLE_PARTS);
+    auto titles = dest->GetCustomTitles();
+    if (titleIdx < titles.size()) {
+      titlePart = titles[titleIdx];
+    }
+    SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String("@copylook %1 → %2 (%3): skin=%4 hair=%5/%6 face=%7 "
+                        "eye=%8/%9/%10 title=%11 (slot %12)")
+            .Arg(source->GetName())
+            .Arg(dest->GetName())
+            .Arg(srcKind)
+            .Arg(dest->GetSkinType())
+            .Arg(dest->GetHairType())
+            .Arg(dest->GetHairColor())
+            .Arg(dest->GetFaceType())
+            .Arg(dest->GetEyeType())
+            .Arg(dest->GetLeftEyeColor())
+            .Arg(dest->GetRightEyeColor())
+            .Arg(titlePart)
+            .Arg(dest->GetCurrentTitle()));
+  }
 
   bool anyVA = false;
   for (uint8_t i = 0; i <= MAX_VA_INDEX; i++) {
@@ -1110,17 +1200,212 @@ bool ChatManager::GMCommand_CopyLook(
     }
   }
   if (!anyVA) {
-    SendChatMessage(client, ChatType_t::CHAT_SELF,
-                    "@copylook: source has no VA — falling back to "
-                    "@copygear for real EquippedItems.");
+    if (!quiet) {
+      SendChatMessage(client, ChatType_t::CHAT_SELF,
+                      "@copylook: source has no VA — falling back to "
+                      "@copygear for real EquippedItems.");
+    }
     CopyStudioGear(client, source);
   } else {
     EquipStudioDummyWeapon(client, true);
   }
 
-  return SendChatMessage(client, ChatType_t::CHAT_SELF,
-                         "@copylook applied (RAM + packets). Run on the "
-                         "mannequin, not live cat/catm.");
+  if (!quiet) {
+    SendChatMessage(client, ChatType_t::CHAT_SELF,
+                    "@copylook applied (RAM + packets). Run on the "
+                    "mannequin, not live cat/catm.");
+  }
+  return "";
+}
+
+libcomp::String ChatManager::PoseStudioMannequin(
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    uint32_t zoneID, float x, float y) {
+  auto server = mServer.lock();
+  if (!server || !client) {
+    return "pose failed: no server/client";
+  }
+
+  auto zoneManager = server->GetZoneManager();
+  auto zoneData = server->GetServerDataManager()->GetZoneData(zoneID, 0);
+  if (!zoneData) {
+    return libcomp::String("pose failed: invalid zone %1").Arg(zoneID);
+  }
+
+  float rotation = zoneData->GetStartingRotation();
+  if (!zoneManager->EnterZone(client, zoneID, 0, x, y, rotation, true)) {
+    return libcomp::String("pose failed: EnterZone %1").Arg(zoneID);
+  }
+
+  auto state = client->GetClientState();
+  auto cState = state ? state->GetCharacterState() : nullptr;
+  if (cState) {
+    zoneManager->Warp(client, cState, x, y, rotation);
+    auto dState = state->GetDemonState();
+    if (dState && dState->GetEntity()) {
+      zoneManager->Warp(client, dState, x, y, rotation);
+    }
+  }
+  client->FlushOutgoing();
+  return "";
+}
+
+libcomp::String ChatManager::HideStudioNameplate(
+    const std::shared_ptr<channel::ChannelClientConnection>& client) {
+  auto server = mServer.lock();
+  if (!server || !client) {
+    return "nameplate hide failed: no server/client";
+  }
+
+  auto state = client->GetClientState();
+  auto cState = state ? state->GetCharacterState() : nullptr;
+  auto character = cState ? cState->GetEntity() : nullptr;
+  if (!character) {
+    return "nameplate hide failed: no character";
+  }
+
+  auto key = StudioCharKey(character);
+  if (key.empty()) {
+    return "nameplate hide failed: no uuid";
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(gStudioNameplateMutex);
+    // Keep first backup so nested hide does not clobber the real name.
+    if (gStudioNameplateBackups.find(key) == gStudioNameplateBackups.end()) {
+      StudioNameplateBackup backup;
+      backup.name = character->GetName();
+      CopyTitlesOut(character, backup.titles);
+      backup.currentTitle = character->GetCurrentTitle();
+      backup.prioritized = character->GetTitlePrioritized();
+      gStudioNameplateBackups[key] = backup;
+    }
+  }
+
+  // Single space: empty names can break client layout; still reads blank.
+  character->SetName(" ");
+  {
+    auto titles = character->GetCustomTitles();
+    for (size_t i = 0; i < titles.size(); ++i) {
+      titles[i] = -1;
+    }
+    character->SetCustomTitles(titles);
+  }
+  character->SetCurrentTitle(0);
+  character->SetTitlePrioritized(false);
+
+  // Never QueueUpdate while faked — blank name must not hit world DB.
+  auto characterManager = server->GetCharacterManager();
+  characterManager->SendCharacterData(client);
+  characterManager->SendCharacterTitle(client, true);
+  auto zone = cState->GetZone();
+  if (zone) {
+    auto others = server->GetZoneManager()->GetZoneConnections(client, false);
+    if (!others.empty()) {
+      characterManager->SendOtherCharacterData(others, state);
+    }
+    // Re-show so the client rebuilds the overhead plate from fresh data.
+    server->GetZoneManager()->ShowEntityToZone(zone, cState->GetEntityID());
+  }
+  client->FlushOutgoing();
+
+  // Put the real name/titles back in RAM immediately. The client already
+  // applied the blank plate from the packets above; leaving " " in the
+  // Character object lets logout persist a blank name (breaks char select
+  // and name-based studio lookup). Keep the backup so Restore can re-send.
+  {
+    std::lock_guard<std::mutex> lock(gStudioNameplateMutex);
+    auto it = gStudioNameplateBackups.find(key);
+    if (it != gStudioNameplateBackups.end()) {
+      character->SetName(it->second.name);
+      CopyTitlesIn(character, it->second.titles);
+      character->SetCurrentTitle(it->second.currentTitle);
+      character->SetTitlePrioritized(it->second.prioritized);
+    }
+  }
+  return "";
+}
+
+libcomp::String ChatManager::RestoreStudioNameplate(
+    const std::shared_ptr<channel::ChannelClientConnection>& client) {
+  auto server = mServer.lock();
+  if (!server || !client) {
+    return "nameplate restore failed: no server/client";
+  }
+
+  auto state = client->GetClientState();
+  auto cState = state ? state->GetCharacterState() : nullptr;
+  auto character = cState ? cState->GetEntity() : nullptr;
+  if (!character) {
+    return "nameplate restore failed: no character";
+  }
+
+  auto key = StudioCharKey(character);
+  StudioNameplateBackup backup;
+  {
+    std::lock_guard<std::mutex> lock(gStudioNameplateMutex);
+    auto it = gStudioNameplateBackups.find(key);
+    if (it == gStudioNameplateBackups.end()) {
+      return "nameplate restore failed: nothing to restore";
+    }
+    backup = it->second;
+    gStudioNameplateBackups.erase(it);
+  }
+
+  character->SetName(backup.name);
+  CopyTitlesIn(character, backup.titles);
+  character->SetCurrentTitle(backup.currentTitle);
+  character->SetTitlePrioritized(backup.prioritized);
+
+  auto characterManager = server->GetCharacterManager();
+  characterManager->SendCharacterData(client);
+  characterManager->SendCharacterTitle(client, true);
+  auto zone = cState->GetZone();
+  if (zone) {
+    auto others = server->GetZoneManager()->GetZoneConnections(client, false);
+    if (!others.empty()) {
+      characterManager->SendOtherCharacterData(others, state);
+    }
+    server->GetZoneManager()->ShowEntityToZone(zone, cState->GetEntityID());
+  }
+  // Persist real name (+ titles from last dress) so a crash mid-job is safe.
+  server->GetWorldDatabase()->QueueUpdate(character, state->GetAccountUID());
+  client->FlushOutgoing();
+  return "";
+}
+
+libcomp::String ChatManager::ResolveStudioMannequinClient(
+    const libcomp::String& mannequin,
+    std::shared_ptr<channel::ChannelClientConnection>& outClient) {
+  outClient = nullptr;
+  auto server = mServer.lock();
+  if (!server || mannequin.IsEmpty()) {
+    return "mannequin resolve failed: no server/name";
+  }
+
+  // Prefer account username — mannequin accounts are vam/vaf; character Name
+  // must not be required (blank-name hide used to break name lookup).
+  auto byAccount =
+      server->GetManagerConnection()->GetClientConnection(mannequin);
+  if (byAccount) {
+    auto state = byAccount->GetClientState();
+    auto cState = state ? state->GetCharacterState() : nullptr;
+    if (cState && cState->GetEntity()) {
+      outClient = byAccount;
+      return "";
+    }
+  }
+
+  libcomp::String name = mannequin;
+  std::shared_ptr<objects::Character> ch;
+  std::shared_ptr<objects::Account> ac;
+  std::shared_ptr<ChannelClientConnection> byChar;
+  if (GetTargetCharacterAccount(name, true, ch, ac, byChar) && byChar) {
+    outClient = byChar;
+    return "";
+  }
+
+  return libcomp::String("mannequin offline: %1").Arg(mannequin);
 }
 
 bool ChatManager::CopyStudioGear(
@@ -2389,8 +2674,9 @@ bool ChatManager::GMCommand_Help(
         "amount and total accumulated points as well."}},
       {"clearinventory",
        {"@clearinventory",
-        "Scrap every unequipped inventory item. Equipped gear",
-        "(including COMP) is kept. Alias: @clearinv."}},
+        "Wipe inventory for studio use: unequip all gear except COMP,",
+        "then scrap everything else. COMP is kept. Alias: @clearinv.",
+        "Does not clear EquippedVA — use @va clear for that."}},
       {"clearinv",
        {"@clearinv", "Alias for @clearinventory."}},
       {"coin",
@@ -2407,11 +2693,12 @@ bool ChatManager::GMCommand_Help(
         "characters with no VA. Gender mismatch is refused."}},
       {"copylook",
        {"@copylook NAME",
-        "Copy NAME's skin/hair/face/eyes/colors and EquippedVA onto",
-        "your live character (mannequin). Gender is not copied;",
-        "mismatch is refused. Online source uses channel RAM,",
-        "else world SQLite. If NAME has no VA, also runs @copygear.",
-        "Does not copy title or partner demon."}},
+        "Copy NAME's skin/hair/face/eyes/colors, EquippedVA, and",
+        "active title (CustomTitles + CurrentTitle) onto your",
+        "mannequin. Gender is not copied; mismatch is refused.",
+        "Online source uses channel RAM, else world SQLite.",
+        "If NAME has no VA, also runs @copygear.",
+        "Does not copy partner demon."}},
       {"counter",
        {"@counter ID [NAME] [VALUE]",
         "View a world counter with a specific ID or view/add",
