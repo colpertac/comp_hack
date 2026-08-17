@@ -18,7 +18,7 @@
         <member type="WorldSharedConfig*" name="WorldSharedConfig"/>
         <member type="bool" name="PerfMonitorEnabled" default="false"/>
         <member type="bool" name="VerifyServerData" default="false"/>
-        <!-- Loopback studio API for portrait worker (0 = disabled). -->
+        <!-- Studio API for portrait worker (0 = disabled). Binds 0.0.0.0; protect with StudioToken. -->
         <member type="u16" name="StudioHttpPort" default="0"/>
         <member type="string" name="StudioToken" default=""/>
     </object>

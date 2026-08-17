@@ -2,7 +2,7 @@
  * @file server/channel/src/StudioHandler.h
  * @ingroup channel
  *
- * @brief Loopback HTTP API for portrait studio mannequin dress/pose.
+ * @brief HTTP API for portrait studio mannequin dress/pose (token-auth).
  *
  * This file is part of the Channel Server (channel).
  *

@@ -103,7 +103,8 @@ int main(int argc, const char *argv[])
     return EXIT_FAILURE;
   }
 
-  // Optional loopback studio HTTP (portrait worker). Port 0 = disabled.
+  // Optional studio HTTP for portrait worker (0 = disabled).
+  // Binds 0.0.0.0 so homelab/LAN can reach it; auth is StudioToken.
   CivetServer* pStudioServer = nullptr;
   channel::StudioHandler* pStudioHandler = nullptr;
   {
@@ -116,8 +117,7 @@ int main(int argc, const char *argv[])
       } else {
         std::vector<std::string> options;
         options.push_back("listening_ports");
-        options.push_back(std::string("127.0.0.1:") +
-                          std::to_string(studioPort));
+        options.push_back(std::string("0.0.0.0:") + std::to_string(studioPort));
         try {
           pStudioHandler = new channel::StudioHandler(chConfig, server);
           pStudioServer = new CivetServer(options);
@@ -128,7 +128,7 @@ int main(int argc, const char *argv[])
           pStudioServer->addHandler("/studio/ensure-name", pStudioHandler);
           LogGeneralInfo([&]() {
             return libcomp::String(
-                       "Studio API listening on 127.0.0.1:%1 "
+                       "Studio API listening on 0.0.0.0:%1 "
                        "(/studio/health, /studio/dress, /studio/pose, "
                        "/studio/nameplate, /studio/ensure-name)\n")
                 .Arg(studioPort);
