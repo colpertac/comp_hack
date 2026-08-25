@@ -34,6 +34,9 @@ start_one() {
   fi
 
   info "starting ${name} (cwd=${RUNTIME_DIR}, config=${cfg})"
+  if [[ "${name}" == "comp_lobby" ]]; then
+    load_comp_reset_secret || info "note: COMP_RESET_SECRET not set — forgot-password disabled on lobby API"
+  fi
   # cwd = runtime/ so relative paths in XML (database/, datastore, logs/) resolve.
   (
     cd "${RUNTIME_DIR}"

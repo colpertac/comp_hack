@@ -99,3 +99,28 @@ wait_for_port() {
   done
   return 1
 }
+
+# Website Admin → Email writes this; Docker entrypoint reads it too.
+load_comp_reset_secret() {
+  if [[ -n "${COMP_RESET_SECRET:-}" ]]; then
+    export COMP_RESET_SECRET
+    return 0
+  fi
+  local candidates=()
+  if [[ -n "${COMP_RESET_SECRET_FILE:-}" ]]; then
+    candidates+=("${COMP_RESET_SECRET_FILE}")
+  fi
+  candidates+=(
+    "${ROOT_DIR}/../ai_custom_smt_server/website/data/comp-reset-secret"
+    "${ROOT_DIR}/../deploy/website-data/comp-reset-secret"
+  )
+  local f
+  for f in "${candidates[@]}"; do
+    [[ -n "${f}" && -f "${f}" ]] || continue
+    COMP_RESET_SECRET="$(tr -d '\n\r' <"${f}")"
+    export COMP_RESET_SECRET
+    info "loaded COMP_RESET_SECRET from ${f}"
+    return 0
+  done
+  return 1
+}

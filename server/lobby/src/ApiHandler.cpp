@@ -594,18 +594,29 @@ bool ApiHandler::Account_RecoveryEmail(
   }
 
   libcomp::String username;
+  libcomp::String emailLookup;
   auto it = request.find("username");
   if (it != request.end()) {
-    username = libcomp::String(it->second.getString()).ToLower();
+    username = libcomp::String(it->second.getString()).ToLower().Trimmed();
+  }
+  it = request.find("email");
+  if (it != request.end()) {
+    emailLookup = libcomp::String(it->second.getString()).ToLower().Trimmed();
   }
 
-  if (username.IsEmpty()) {
-    response["error"] = "Username not found.";
+  if (username.IsEmpty() && emailLookup.IsEmpty()) {
+    response["error"] = "Username or email required.";
     return true;
   }
 
-  auto account =
-      objects::Account::LoadAccountByUsername(GetDatabase(), username);
+  auto db = GetDatabase();
+  std::shared_ptr<objects::Account> account;
+  if (!username.IsEmpty()) {
+    account = objects::Account::LoadAccountByUsername(db, username);
+  } else {
+    account = objects::Account::LoadAccountByEmail(db, emailLookup);
+  }
+
   if (!account || !account->GetEnabled()) {
     response["error"] = "Account not found.";
     return true;
