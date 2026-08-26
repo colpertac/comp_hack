@@ -28,8 +28,11 @@
 
 // libcomp Includes
 #include <AccountManager.h>
+#include <algorithm>
 #include <cstring>
 #include <cstdlib>
+#include <ctime>
+#include <vector>
 #include <BaseServer.h>
 #include <CString.h>
 #include <Crypto.h>
@@ -39,19 +42,23 @@
 #include <ErrorCodes.h>
 #include <Log.h>
 #include <PacketCodes.h>
+#include <PersistentObject.h>
 #include <Randomizer.h>
 #include <ScriptEngine.h>
 #include <ServerConstants.h>
 
 // object Includes
+#include <Account.h>
 #include <AccountWorldData.h>
 #include <Character.h>
 #include <CharacterLogin.h>
 #include <CharacterProgress.h>
+#include <ChatLogEntry.h>
 #include <MiShopProductData.h>
 #include <PostItem.h>
 #include <Promo.h>
 #include <PromoExchange.h>
+#include <ReportedPlayer.h>
 #include <WebGameSession.h>
 
 // lobby Includes
@@ -96,6 +103,9 @@ ApiHandler::ApiHandler(const std::shared_ptr<objects::LobbyConfig>& config,
   mParsers["/admin/kick_player"] = &ApiHandler::Admin_KickPlayer;
   mParsers["/admin/message_world"] = &ApiHandler::Admin_MessageWorld;
   mParsers["/admin/online"] = &ApiHandler::Admin_Online;
+  mParsers["/admin/list_chat_logs"] = &ApiHandler::Admin_ListChatLogs;
+  mParsers["/admin/list_reports"] = &ApiHandler::Admin_ListReports;
+  mParsers["/admin/resolve_report"] = &ApiHandler::Admin_ResolveReport;
   mParsers["/admin/post_items"] = &ApiHandler::Admin_PostItems;
   mParsers["/admin/get_promos"] = &ApiHandler::Admin_GetPromos;
   mParsers["/admin/create_promo"] = &ApiHandler::Admin_CreatePromo;
@@ -1301,6 +1311,286 @@ bool ApiHandler::Admin_Online(const JsonBox::Object& request,
 
   response["error"] = "Success";
 
+  return true;
+}
+
+bool ApiHandler::Admin_ListChatLogs(const JsonBox::Object& request,
+                                    JsonBox::Object& response,
+                                    const std::shared_ptr<ApiSession>& session) {
+  (void)session;
+
+  if (!HaveUserLevel(response, session, SVR_CONST.API_ADMIN_LVL_ONLINE)) {
+    return true;
+  }
+
+  auto world = GetWorld(request, response);
+  auto worldDB = world ? world->GetWorldDatabase() : nullptr;
+  if (!worldDB) {
+    return true;
+  }
+
+  libcomp::String characterName;
+  auto it = request.find("character_name");
+  if (it != request.end()) {
+    characterName = it->second.getString();
+  }
+
+  uint32_t since = 0;
+  uint32_t until = 0;
+  it = request.find("since");
+  if (it != request.end()) {
+    since = (uint32_t)it->second.getInteger();
+  }
+  it = request.find("until");
+  if (it != request.end()) {
+    until = (uint32_t)it->second.getInteger();
+  }
+
+  int limit = 200;
+  it = request.find("limit");
+  if (it != request.end()) {
+    limit = (int)it->second.getInteger();
+  }
+  if (limit < 1) {
+    limit = 1;
+  } else if (limit > 200) {
+    limit = 200;
+  }
+
+  std::list<std::shared_ptr<objects::ChatLogEntry>> entries;
+  if (!characterName.IsEmpty()) {
+    entries = objects::ChatLogEntry::LoadChatLogEntryListByCharacterName(
+        worldDB, characterName);
+  } else {
+    // Range query — avoid LoadAll (unreliable / heavy for this log table).
+    uint32_t effectiveUntil = until ? until : (uint32_t)std::time(0);
+    uint32_t effectiveSince = since;
+    if (effectiveSince == 0) {
+      effectiveSince = effectiveUntil > 3600
+                           ? (uint32_t)(effectiveUntil - 3600)
+                           : 0;
+    }
+
+    auto query = worldDB->Prepare(libcomp::String(
+        "SELECT UID FROM ChatLogEntry WHERE Timestamp >= %1 AND "
+        "Timestamp <= %2 ORDER BY Timestamp DESC LIMIT %3;")
+                                      .Arg(effectiveSince)
+                                      .Arg(effectiveUntil)
+                                      .Arg(limit));
+    if (query.IsValid() && query.Execute()) {
+      while (query.Next()) {
+        libobjgen::UUID uid;
+        if (!query.GetValue("UID", uid) || uid.IsNull()) {
+          continue;
+        }
+        auto entry =
+            libcomp::PersistentObject::LoadObjectByUUID<objects::ChatLogEntry>(
+                worldDB, uid);
+        if (entry) {
+          entries.push_back(entry);
+        }
+      }
+    } else {
+      LogWebAPIErrorMsg("Failed to query ChatLogEntry by time range\n");
+    }
+  }
+
+  std::vector<std::shared_ptr<objects::ChatLogEntry>> filtered;
+  filtered.reserve(entries.size());
+  for (auto& entry : entries) {
+    uint32_t ts = entry->GetTimestamp();
+    if (since && ts < since) {
+      continue;
+    }
+    if (until && ts > until) {
+      continue;
+    }
+    filtered.push_back(entry);
+  }
+
+  std::sort(filtered.begin(), filtered.end(),
+            [](const std::shared_ptr<objects::ChatLogEntry>& a,
+               const std::shared_ptr<objects::ChatLogEntry>& b) {
+              return a->GetTimestamp() > b->GetTimestamp();
+            });
+
+  JsonBox::Array objectList;
+  int count = 0;
+  for (auto& entry : filtered) {
+    if (count >= limit) {
+      break;
+    }
+
+    JsonBox::Object obj;
+    obj["uid"] = entry->GetUUID().ToString();
+    obj["character_name"] = entry->GetCharacterName().ToUtf8();
+    obj["chat_type"] = (int)entry->GetChatType();
+    obj["target_name"] = entry->GetTargetName().ToUtf8();
+    obj["message"] = entry->GetMessage().ToUtf8();
+    obj["zone_id"] = (int)entry->GetZoneID();
+    obj["channel_id"] = (int)entry->GetChannelID();
+    obj["timestamp"] = (int)entry->GetTimestamp();
+    objectList.push_back(obj);
+    count++;
+  }
+
+  response["logs"] = objectList;
+  response["error"] = "Success";
+
+  return true;
+}
+
+bool ApiHandler::Admin_ListReports(const JsonBox::Object& request,
+                                   JsonBox::Object& response,
+                                   const std::shared_ptr<ApiSession>& session) {
+  (void)session;
+
+  if (!HaveUserLevel(response, session, SVR_CONST.API_ADMIN_LVL_ONLINE)) {
+    return true;
+  }
+
+  auto world = GetWorld(request, response);
+  auto worldDB = world ? world->GetWorldDatabase() : nullptr;
+  if (!worldDB) {
+    return true;
+  }
+
+  auto lobbyDB = mServer->GetMainDatabase();
+
+  bool resolved = false;
+  auto it = request.find("resolved");
+  if (it != request.end()) {
+    resolved = it->second.getBoolean();
+  }
+
+  libcomp::String playerName;
+  it = request.find("player_name");
+  if (it != request.end()) {
+    playerName = it->second.getString();
+  }
+
+  int limit = 100;
+  it = request.find("limit");
+  if (it != request.end()) {
+    limit = (int)it->second.getInteger();
+  }
+  if (limit < 1) {
+    limit = 1;
+  } else if (limit > 200) {
+    limit = 200;
+  }
+
+  std::list<std::shared_ptr<objects::ReportedPlayer>> reported;
+  if (!playerName.IsEmpty()) {
+    for (auto entry :
+         objects::ReportedPlayer::LoadReportedPlayerListByPlayerName(
+             worldDB, playerName)) {
+      if (entry->GetResolved() == resolved) {
+        reported.push_back(entry);
+      }
+    }
+  } else {
+    reported = objects::ReportedPlayer::LoadReportedPlayerListByResolved(
+        worldDB, resolved);
+  }
+
+  std::vector<std::shared_ptr<objects::ReportedPlayer>> sorted(reported.begin(),
+                                                              reported.end());
+  std::sort(sorted.begin(), sorted.end(),
+            [](const std::shared_ptr<objects::ReportedPlayer>& a,
+               const std::shared_ptr<objects::ReportedPlayer>& b) {
+              return a->GetReportTime() > b->GetReportTime();
+            });
+
+  JsonBox::Array objectList;
+  int count = 0;
+  for (auto& entry : sorted) {
+    if (count >= limit) {
+      break;
+    }
+
+    JsonBox::Object obj;
+    obj["uid"] = entry->GetUUID().ToString();
+    obj["player_name"] = entry->GetPlayerName().ToUtf8();
+    obj["location"] = entry->GetLocation().ToUtf8();
+    obj["comment"] = entry->GetComment().ToUtf8();
+    obj["subject"] = (int)entry->GetSubject();
+    obj["resolved"] = entry->GetResolved();
+    obj["report_time"] = (int)entry->GetReportTime();
+    obj["resolve_time"] = (int)entry->GetResolveTime();
+
+    auto reporter = entry->GetReporter().Get(lobbyDB);
+    obj["reporter_username"] =
+        reporter ? reporter->GetUsername().ToUtf8() : "";
+
+    auto resolver = entry->GetResolver().Get(lobbyDB);
+    obj["resolver_username"] =
+        resolver ? resolver->GetUsername().ToUtf8() : "";
+
+    objectList.push_back(obj);
+    count++;
+  }
+
+  response["reports"] = objectList;
+  response["error"] = "Success";
+
+  return true;
+}
+
+bool ApiHandler::Admin_ResolveReport(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    const std::shared_ptr<ApiSession>& session) {
+  if (!HaveUserLevel(response, session, SVR_CONST.API_ADMIN_LVL_ONLINE)) {
+    return true;
+  }
+
+  auto world = GetWorld(request, response);
+  auto worldDB = world ? world->GetWorldDatabase() : nullptr;
+  if (!worldDB) {
+    return true;
+  }
+
+  libcomp::String uidStr;
+  auto it = request.find("uid");
+  if (it != request.end()) {
+    uidStr = it->second.getString();
+  }
+  if (uidStr.IsEmpty()) {
+    response["error"] = "No report UID specified.";
+    return true;
+  }
+
+  libobjgen::UUID uuid(uidStr.C());
+  if (uuid.IsNull()) {
+    response["error"] = "Invalid report UID.";
+    return true;
+  }
+
+  auto reported =
+      libcomp::PersistentObject::LoadObjectByUUID<objects::ReportedPlayer>(
+          worldDB, uuid);
+  if (!reported) {
+    response["error"] = "Report not found.";
+    return true;
+  }
+
+  if (reported->GetResolved()) {
+    response["error"] = "Report already resolved.";
+    return true;
+  }
+
+  reported->SetResolved(true);
+  reported->SetResolveTime((uint32_t)std::time(0));
+  if (session->account) {
+    reported->SetResolver(session->account);
+  }
+
+  if (!reported->Update(worldDB)) {
+    response["error"] = "Failed to resolve report.";
+    return true;
+  }
+
+  response["error"] = "Success";
   return true;
 }
 

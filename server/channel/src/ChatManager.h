@@ -182,6 +182,12 @@ class ChatManager {
       std::shared_ptr<objects::Account>& targetAccount,
       std::shared_ptr<channel::ChannelClientConnection>& targetClient);
 
+  /**
+   * Delete ChatLogEntry rows older than 14 days from the world database.
+   * Safe to call from any channel (idempotent DELETE).
+   */
+  void PruneOldChatLogs();
+
  private:
   /**
    * GM command to add CP to a target account.
@@ -962,6 +968,14 @@ class ChatManager {
 
     return ok;
   }
+
+  /**
+   * Persist a player chat line to the world DB chat log (skips CHAT_SELF).
+   */
+  void RecordChatLog(
+      const std::shared_ptr<channel::ChannelClientConnection>& client,
+      ChatType_t chatChannel, const libcomp::String& message,
+      const libcomp::String& targetName = {});
 
   /// Pointer to the channel server
   std::weak_ptr<ChannelServer> mServer;

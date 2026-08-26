@@ -1236,6 +1236,16 @@ void ChannelServer::ScheduleRecurringActions() {
       (int)(next ? next : DAY_SEC),
       [](ChannelServer* pServer) { pServer->HandleDemonQuestReset(); }, this);
 
+  // Prune persisted chat logs older than 14 days once per hour
+  mTimerManager.SchedulePeriodicEvent(
+      std::chrono::milliseconds(3600000),
+      [](ChannelServer* pServer) {
+        if (pServer->GetChatManager()) {
+          pServer->GetChatManager()->PruneOldChatLogs();
+        }
+      },
+      this);
+
   // Start the tick handler
   StartGameTick();
 

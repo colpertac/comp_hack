@@ -46,6 +46,7 @@
 #include <Character.h>
 #include <CharacterLogin.h>
 #include <CharacterProgress.h>
+#include <ChatLogEntry.h>
 #include <Clan.h>
 #include <CultureData.h>
 #include <Event.h>
@@ -426,6 +427,7 @@ bool ChatManager::SendChatMessage(
       return false;
   }
 
+  RecordChatLog(client, chatChannel, message);
   return true;
 }
 
@@ -463,7 +465,69 @@ bool ChatManager::SendTellMessage(
   mServer.lock()->GetManagerConnection()->GetWorldConnection()->SendPacket(
       relay);
 
+  RecordChatLog(client, ChatType_t::CHAT_TELL, message, targetName);
   return true;
+}
+
+void ChatManager::RecordChatLog(
+    const std::shared_ptr<ChannelClientConnection>& client,
+    ChatType_t chatChannel, const libcomp::String& message,
+    const libcomp::String& targetName) {
+  if (chatChannel == ChatType_t::CHAT_SELF || message.IsEmpty() || !client) {
+    return;
+  }
+
+  auto server = mServer.lock();
+  if (!server) {
+    return;
+  }
+
+  auto state = client->GetClientState();
+  auto cState = state ? state->GetCharacterState() : nullptr;
+  auto character = cState ? cState->GetEntity() : nullptr;
+  if (!character) {
+    return;
+  }
+
+  auto zone = state->GetZone();
+  auto entry = libcomp::PersistentObject::New<objects::ChatLogEntry>(true);
+  entry->SetCharacterName(character->GetName());
+  entry->SetCharacter(character);
+  entry->SetAccount(state->GetAccountUID());
+  entry->SetChatType((uint16_t)chatChannel);
+  entry->SetTargetName(targetName);
+  entry->SetMessage(message);
+  entry->SetZoneID(zone ? zone->GetDefinitionID() : 0);
+  entry->SetChannelID(server->GetChannelID());
+  entry->SetTimestamp((uint32_t)std::time(0));
+
+  server->GetWorldDatabase()->QueueInsert(entry);
+}
+
+void ChatManager::PruneOldChatLogs() {
+  auto server = mServer.lock();
+  if (!server) {
+    return;
+  }
+
+  auto worldDB = server->GetWorldDatabase();
+  if (!worldDB) {
+    return;
+  }
+
+  // 14-day retention window.
+  uint32_t cutoff = (uint32_t)std::time(0);
+  if (cutoff > (uint32_t)(14 * DAY_SEC)) {
+    cutoff = (uint32_t)(cutoff - (uint32_t)(14 * DAY_SEC));
+  } else {
+    cutoff = 0;
+  }
+
+  if (!worldDB->Execute(libcomp::String(
+                            "DELETE FROM ChatLogEntry WHERE Timestamp < %1;")
+                            .Arg(cutoff))) {
+    LogChatManagerWarningMsg("Failed to prune old ChatLogEntry rows\n");
+  }
 }
 
 bool ChatManager::SendTeamChatMessage(
@@ -3020,7 +3084,8 @@ bool ChatManager::GMCommand_Help(
       {"reported",
        {"@reported [COUNT|PLAYERNAME]",
         "Get a set of unresolved reported player records of a",
-        "specified COUNT or targeted at a specific PLAYERNAME."}},
+        "specified COUNT or targeted at a specific PLAYERNAME.",
+        "Full chat evidence is in the Admin web Reports page."}},
       {"resolve",
        {"@resolve ENTRYUID",
         "Resolve a reported player record by UID. Records can",
@@ -3928,6 +3993,12 @@ bool ChatManager::GMCommand_Reported(
           .Arg(reported.size())
           .Arg(reported.size() != 1 ? "s" : "")
           .Arg(reported.size() > (size_t)count ? " (limited to 5)" : ""));
+
+  if (reported.size() > 0) {
+    SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        "Full chat evidence: Admin web → Reports / Chat logs");
+  }
 
   for (auto entry : reported) {
     SendChatMessage(

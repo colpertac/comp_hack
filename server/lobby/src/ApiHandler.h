@@ -150,6 +150,15 @@ class ApiHandler : public CivetHandler {
                           const std::shared_ptr<ApiSession>& session);
   bool Admin_Online(const JsonBox::Object& request, JsonBox::Object& response,
                     const std::shared_ptr<ApiSession>& session);
+  bool Admin_ListChatLogs(const JsonBox::Object& request,
+                          JsonBox::Object& response,
+                          const std::shared_ptr<ApiSession>& session);
+  bool Admin_ListReports(const JsonBox::Object& request,
+                         JsonBox::Object& response,
+                         const std::shared_ptr<ApiSession>& session);
+  bool Admin_ResolveReport(const JsonBox::Object& request,
+                           JsonBox::Object& response,
+                           const std::shared_ptr<ApiSession>& session);
   bool Admin_PostItems(const JsonBox::Object& request,
                        JsonBox::Object& response,
                        const std::shared_ptr<ApiSession>& session);
