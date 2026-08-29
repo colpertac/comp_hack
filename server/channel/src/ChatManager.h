@@ -183,7 +183,8 @@ class ChatManager {
       std::shared_ptr<channel::ChannelClientConnection>& targetClient);
 
   /**
-   * Delete ChatLogEntry rows older than 14 days from the world database.
+   * Delete ChatLogEntry rows older than WorldSharedConfig.ChatLogRetentionDays
+   * from the world database. No-op when retention days is 0 (keep forever).
    * Safe to call from any channel (idempotent DELETE).
    */
   void PruneOldChatLogs();

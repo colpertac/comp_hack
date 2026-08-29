@@ -1357,70 +1357,57 @@ bool ApiHandler::Admin_ListChatLogs(const JsonBox::Object& request,
     limit = 200;
   }
 
-  std::list<std::shared_ptr<objects::ChatLogEntry>> entries;
+  uint32_t effectiveUntil = until ? until : (uint32_t)std::time(0);
+  uint32_t effectiveSince = since;
+  // No-name queries default to the last hour to avoid scanning the whole table.
+  if (characterName.IsEmpty() && effectiveSince == 0) {
+    effectiveSince = effectiveUntil > 3600 ? (uint32_t)(effectiveUntil - 3600)
+                                           : 0;
+  }
+
+  // Escape single quotes for the optional CharacterName literal.
+  libcomp::String nameEscaped = characterName.Replace("'", "''");
+
+  libcomp::String sql;
   if (!characterName.IsEmpty()) {
-    entries = objects::ChatLogEntry::LoadChatLogEntryListByCharacterName(
-        worldDB, characterName);
+    sql = libcomp::String(
+              "SELECT UID FROM ChatLogEntry WHERE Timestamp >= %1 AND "
+              "Timestamp <= %2 AND CharacterName = '%3' ORDER BY Timestamp "
+              "DESC LIMIT %4;")
+              .Arg(effectiveSince)
+              .Arg(effectiveUntil)
+              .Arg(nameEscaped)
+              .Arg(limit);
   } else {
-    // Range query — avoid LoadAll (unreliable / heavy for this log table).
-    uint32_t effectiveUntil = until ? until : (uint32_t)std::time(0);
-    uint32_t effectiveSince = since;
-    if (effectiveSince == 0) {
-      effectiveSince = effectiveUntil > 3600
-                           ? (uint32_t)(effectiveUntil - 3600)
-                           : 0;
-    }
+    sql = libcomp::String(
+              "SELECT UID FROM ChatLogEntry WHERE Timestamp >= %1 AND "
+              "Timestamp <= %2 ORDER BY Timestamp DESC LIMIT %3;")
+              .Arg(effectiveSince)
+              .Arg(effectiveUntil)
+              .Arg(limit);
+  }
 
-    auto query = worldDB->Prepare(libcomp::String(
-        "SELECT UID FROM ChatLogEntry WHERE Timestamp >= %1 AND "
-        "Timestamp <= %2 ORDER BY Timestamp DESC LIMIT %3;")
-                                      .Arg(effectiveSince)
-                                      .Arg(effectiveUntil)
-                                      .Arg(limit));
-    if (query.IsValid() && query.Execute()) {
-      while (query.Next()) {
-        libobjgen::UUID uid;
-        if (!query.GetValue("UID", uid) || uid.IsNull()) {
-          continue;
-        }
-        auto entry =
-            libcomp::PersistentObject::LoadObjectByUUID<objects::ChatLogEntry>(
-                worldDB, uid);
-        if (entry) {
-          entries.push_back(entry);
-        }
+  std::list<std::shared_ptr<objects::ChatLogEntry>> entries;
+  auto query = worldDB->Prepare(sql);
+  if (query.IsValid() && query.Execute()) {
+    while (query.Next()) {
+      libobjgen::UUID uid;
+      if (!query.GetValue("UID", uid) || uid.IsNull()) {
+        continue;
       }
-    } else {
-      LogWebAPIErrorMsg("Failed to query ChatLogEntry by time range\n");
+      auto entry =
+          libcomp::PersistentObject::LoadObjectByUUID<objects::ChatLogEntry>(
+              worldDB, uid);
+      if (entry) {
+        entries.push_back(entry);
+      }
     }
+  } else {
+    LogWebAPIErrorMsg("Failed to query ChatLogEntry by time range\n");
   }
-
-  std::vector<std::shared_ptr<objects::ChatLogEntry>> filtered;
-  filtered.reserve(entries.size());
-  for (auto& entry : entries) {
-    uint32_t ts = entry->GetTimestamp();
-    if (since && ts < since) {
-      continue;
-    }
-    if (until && ts > until) {
-      continue;
-    }
-    filtered.push_back(entry);
-  }
-
-  std::sort(filtered.begin(), filtered.end(),
-            [](const std::shared_ptr<objects::ChatLogEntry>& a,
-               const std::shared_ptr<objects::ChatLogEntry>& b) {
-              return a->GetTimestamp() > b->GetTimestamp();
-            });
 
   JsonBox::Array objectList;
-  int count = 0;
-  for (auto& entry : filtered) {
-    if (count >= limit) {
-      break;
-    }
-
+  for (auto& entry : entries) {
     JsonBox::Object obj;
     obj["uid"] = entry->GetUUID().ToString();
     obj["character_name"] = entry->GetCharacterName().ToUtf8();
@@ -1431,7 +1418,6 @@ bool ApiHandler::Admin_ListChatLogs(const JsonBox::Object& request,
     obj["channel_id"] = (int)entry->GetChannelID();
     obj["timestamp"] = (int)entry->GetTimestamp();
     objectList.push_back(obj);
-    count++;
   }
 
   response["logs"] = objectList;

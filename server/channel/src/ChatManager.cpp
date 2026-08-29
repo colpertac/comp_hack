@@ -75,6 +75,7 @@
 #include <ServerZone.h>
 #include <ServerZoneInstance.h>
 #include <Team.h>
+#include <WorldSharedConfig.h>
 
 // Standard C Includes
 #include <array>
@@ -515,10 +516,18 @@ void ChatManager::PruneOldChatLogs() {
     return;
   }
 
-  // 14-day retention window.
+  auto sharedConfig = server->GetWorldSharedConfig();
+  uint16_t retentionDays =
+      sharedConfig ? sharedConfig->GetChatLogRetentionDays() : 0;
+  if (retentionDays == 0) {
+    // 0 = keep forever.
+    return;
+  }
+
   uint32_t cutoff = (uint32_t)std::time(0);
-  if (cutoff > (uint32_t)(14 * DAY_SEC)) {
-    cutoff = (uint32_t)(cutoff - (uint32_t)(14 * DAY_SEC));
+  uint32_t window = (uint32_t)retentionDays * (uint32_t)DAY_SEC;
+  if (cutoff > window) {
+    cutoff = (uint32_t)(cutoff - window);
   } else {
     cutoff = 0;
   }

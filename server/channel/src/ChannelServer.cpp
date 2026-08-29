@@ -1236,7 +1236,8 @@ void ChannelServer::ScheduleRecurringActions() {
       (int)(next ? next : DAY_SEC),
       [](ChannelServer* pServer) { pServer->HandleDemonQuestReset(); }, this);
 
-  // Prune persisted chat logs older than 14 days once per hour
+  // Prune persisted chat logs per WorldSharedConfig.ChatLogRetentionDays
+  // (0 = disabled) once per hour
   mTimerManager.SchedulePeriodicEvent(
       std::chrono::milliseconds(3600000),
       [](ChannelServer* pServer) {
