@@ -126,11 +126,13 @@ int main(int argc, const char *argv[])
           pStudioServer->addHandler("/studio/pose", pStudioHandler);
           pStudioServer->addHandler("/studio/nameplate", pStudioHandler);
           pStudioServer->addHandler("/studio/ensure-name", pStudioHandler);
+          pStudioServer->addHandler("/armory/stats", pStudioHandler);
           LogGeneralInfo([&]() {
             return libcomp::String(
                        "Studio API listening on 0.0.0.0:%1 "
                        "(/studio/health, /studio/dress, /studio/pose, "
-                       "/studio/nameplate, /studio/ensure-name)\n")
+                       "/studio/nameplate, /studio/ensure-name, "
+                       "/armory/stats)\n")
                 .Arg(studioPort);
           });
         } catch (const CivetException& e) {

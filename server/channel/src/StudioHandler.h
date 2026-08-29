@@ -70,6 +70,9 @@ class StudioHandler : public CivetHandler {
 
   bool HandleEnsureName(struct mg_connection* pConnection);
 
+  bool HandleArmoryStats(struct mg_connection* pConnection,
+                         const struct mg_request_info* info);
+
   static libcomp::String EscapeJson(const libcomp::String& s);
 
   std::shared_ptr<objects::ChannelConfig> mConfig;
