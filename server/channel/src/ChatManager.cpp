@@ -81,6 +81,8 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <vector>
 #include <mutex>
 #include <set>
@@ -135,6 +137,154 @@ void CopyTitlesIn(const std::shared_ptr<objects::Character>& c,
   c->SetCustomTitles(titles);
 }
 
+struct DungeonQAEntry {
+  uint32_t id = 0;
+  libcomp::String label;
+  uint32_t instanceId = 0;
+  uint32_t variantId = 0;
+  uint32_t zoneId = 0;
+  uint32_t dynamicMapId = 0;
+  float x = 0.f;
+  float y = 0.f;
+  uint32_t spotId = 0;
+  int32_t dedupFlag = 0;
+  bool invuln = true;
+  libcomp::String bossEvent;
+  libcomp::String payoutId;
+};
+
+static std::vector<std::string> SplitTSVFields(const std::string& line) {
+  std::vector<std::string> out;
+  std::string field;
+  for (char c : line) {
+    if (c == '\t') {
+      out.push_back(field);
+      field.clear();
+    } else {
+      field.push_back(c);
+    }
+  }
+  out.push_back(field);
+  return out;
+}
+
+static bool ParseDungeonQAEntry(const std::vector<std::string>& cols,
+                                DungeonQAEntry& entry) {
+  if (cols.size() < 12) {
+    return false;
+  }
+  try {
+    entry.id = static_cast<uint32_t>(std::stoul(cols[0]));
+    entry.label = cols[1].c_str();
+    entry.instanceId = static_cast<uint32_t>(std::stoul(cols[2]));
+    entry.variantId = static_cast<uint32_t>(std::stoul(cols[3]));
+    entry.zoneId = static_cast<uint32_t>(std::stoul(cols[4]));
+    entry.dynamicMapId = static_cast<uint32_t>(std::stoul(cols[5]));
+    entry.x = std::stof(cols[6]);
+    entry.y = std::stof(cols[7]);
+    entry.spotId = static_cast<uint32_t>(std::stoul(cols[8]));
+    entry.dedupFlag = static_cast<int32_t>(std::stol(cols[9]));
+    entry.invuln = cols[10] != "0";
+    entry.bossEvent = cols[11].c_str();
+    entry.payoutId = cols.size() > 12 ? cols[12].c_str() : "";
+  } catch (...) {
+    return false;
+  }
+  return entry.id > 0 && entry.instanceId > 0;
+}
+
+static bool LoadDungeonQAEntries(const std::string& path,
+                                 std::vector<DungeonQAEntry>& out,
+                                 libcomp::String& err) {
+  out.clear();
+  std::ifstream in(path);
+  if (!in.is_open()) {
+    err = libcomp::String("Cannot open dungeon QA config: %1").Arg(path.c_str());
+    return false;
+  }
+
+  std::string line;
+  uint32_t lineNo = 0;
+  while (std::getline(in, line)) {
+    ++lineNo;
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+    auto cols = SplitTSVFields(line);
+    DungeonQAEntry entry;
+    if (!ParseDungeonQAEntry(cols, entry)) {
+      err = libcomp::String("Bad dungeon_qa.tsv line %1").Arg(lineNo);
+      return false;
+    }
+    out.push_back(entry);
+  }
+
+  if (out.empty()) {
+    err = "dungeon_qa.tsv has no entries";
+    return false;
+  }
+
+  return true;
+}
+
+static const DungeonQAEntry* FindDungeonQAEntry(
+    const std::vector<DungeonQAEntry>& entries, uint32_t id) {
+  for (const auto& entry : entries) {
+    if (entry.id == id) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+/** Map zoneId → dynamicMapId from ServerZoneInstance (ZoneIDs[i], DynamicMapIDs[i]). */
+static uint32_t ResolveInstanceDynamicMap(
+    const std::shared_ptr<objects::ServerZoneInstance>& instDef,
+    uint32_t zoneId, uint32_t configured) {
+  if (!instDef) {
+    return configured;
+  }
+  for (size_t i = 0; i < instDef->ZoneIDsCount(); i++) {
+    if (instDef->GetZoneIDs(i) == zoneId) {
+      return instDef->GetDynamicMapIDs(i);
+    }
+  }
+  return configured;
+}
+
+static void ResolveBossZone(const std::shared_ptr<objects::ServerZoneInstance>& instDef,
+                            uint32_t& zoneId, uint32_t& dynamicMapId) {
+  if (!instDef || instDef->ZoneIDsCount() == 0) {
+    return;
+  }
+  if (zoneId == 0) {
+    const size_t last = instDef->ZoneIDsCount() - 1;
+    zoneId = instDef->GetZoneIDs(last);
+    dynamicMapId = instDef->GetDynamicMapIDs(last);
+    return;
+  }
+  dynamicMapId = ResolveInstanceDynamicMap(instDef, zoneId, dynamicMapId);
+}
+
+/** Leave instance and clear reconnect state before creating a new one. */
+static bool ForceLeaveInstanceForQA(
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    ZoneManager* zoneManager) {
+  auto state = client->GetClientState();
+  state->SetChannelLogin(nullptr);
+  state->SetLastInstanceID(0);
+  state->SetLastZoneID(0);
+
+  auto currentZone = state->GetZone();
+  if (currentZone && currentZone->GetInstance()) {
+    if (!zoneManager->MoveToLobby(client)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 }  // namespace
 
 ChatManager::ChatManager(const std::weak_ptr<ChannelServer>& server)
@@ -170,6 +320,9 @@ ChatManager::ChatManager(const std::weak_ptr<ChannelServer>& server)
   mGMands["help"] = &ChatManager::GMCommand_Help;
   mGMands["homepoint"] = &ChatManager::GMCommand_Homepoint;
   mGMands["instance"] = &ChatManager::GMCommand_Instance;
+  mGMands["dungeon-qa"] = &ChatManager::GMCommand_DungeonQA;
+  mGMands["dungeonqa"] = &ChatManager::GMCommand_DungeonQA;
+  mGMands["dqa"] = &ChatManager::GMCommand_DungeonQA;
   mGMands["invuln"] = &ChatManager::GMCommand_Invuln;
   mGMands["god"] = &ChatManager::GMCommand_Invuln;
   mGMands["item"] = &ChatManager::GMCommand_Item;
@@ -2939,6 +3092,14 @@ bool ChatManager::GMCommand_Help(
            "@crash",
            "Causes the server to crash for testing the database.",
        }},
+      {"dungeon-qa",
+       {"@dungeon-qa [list|N]",
+        "Payout QA: enter instance N from config/dungeon_qa.tsv at the boss",
+        "floor, reset payout dedup flag, enable invuln, start boss event.",
+        "Aliases: @dungeonqa, @dqa"}},
+      {"dungeonqa",
+       {"@dungeonqa [list|N]", "Alias for @dungeon-qa."}},
+      {"dqa", {"@dqa [list|N]", "Alias for @dungeon-qa."}},
       {"dummyweapon",
        {"@dummyweapon",
         "Equip a cheap dummy in weapon slot 13 matching EquippedVA",
@@ -3384,6 +3545,258 @@ bool ChatManager::GMCommand_Instance(
           .Arg(instanceID)
           .Arg(variantID)
           .Arg(diaspora ? "" : "; entering now"));
+}
+
+bool ChatManager::GMCommand_DungeonQA(
+    const std::shared_ptr<channel::ChannelClientConnection>& client,
+    const std::list<libcomp::String>& args) {
+  if (!HaveUserLevel(client, SVR_CONST.GM_CMD_LVL_INSTANCE)) {
+    return true;
+  }
+
+  std::list<libcomp::String> argsCopy = args;
+  libcomp::String sub;
+  if (!argsCopy.empty()) {
+    if (!GetStringArg(sub, argsCopy)) {
+      return false;
+    }
+  }
+
+  auto server = mServer.lock();
+  std::string configPath = server->GetConfigPath() + "dungeon_qa.tsv";
+  std::vector<DungeonQAEntry> entries;
+  libcomp::String loadErr;
+  if (!LoadDungeonQAEntries(configPath, entries, loadErr)) {
+    return SendChatMessage(client, ChatType_t::CHAT_SELF, loadErr);
+  }
+
+  const libcomp::String subLower = sub.ToLower();
+  if (subLower.IsEmpty() || subLower == "list") {
+    SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String("dungeon-qa entries (%1) from %2:")
+            .Arg(entries.size())
+            .Arg(configPath.c_str()));
+    for (const auto& entry : entries) {
+      SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          libcomp::String("  %1: %2 (instance %3, payout %4)")
+              .Arg(entry.id)
+              .Arg(entry.label)
+              .Arg(entry.instanceId)
+              .Arg(entry.payoutId.IsEmpty() ? "-" : entry.payoutId));
+    }
+    SendChatMessage(client, ChatType_t::CHAT_SELF,
+                    "Use @dungeon-qa N to warp to boss floor and reset payout "
+                    "dedup. Edit config/dungeon_qa.tsv to add rows.");
+    return true;
+  }
+
+  if (subLower == "reload") {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String("dungeon_qa.tsv reloaded on next command (%1 entries)")
+            .Arg(entries.size()));
+  }
+
+  if (subLower == "leave") {
+    if (!ForceLeaveInstanceForQA(client, server->GetZoneManager())) {
+      return SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          "Could not leave the current instance (lobby warp failed)");
+    }
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        "Left instance and cleared stale access/reconnect state.");
+  }
+
+  uint32_t entryId = 0;
+  try {
+    entryId = static_cast<uint32_t>(std::stoul(sub.ToUtf8()));
+  } catch (...) {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        "Usage: @dungeon-qa [list|N] — N is the row id from dungeon_qa.tsv");
+  }
+
+  const DungeonQAEntry* entry = FindDungeonQAEntry(entries, entryId);
+  if (!entry) {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String("Unknown dungeon-qa id %1 (use @dungeon-qa list)")
+            .Arg(entryId));
+  }
+
+  auto state = client->GetClientState();
+  auto zoneManager = server->GetZoneManager();
+  if (!ForceLeaveInstanceForQA(client, zoneManager)) {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        "Leave the current instance first (lobby warp failed)");
+  }
+
+  auto serverDataManager = server->GetServerDataManager();
+  if (!serverDataManager->GetZoneInstanceData(entry->instanceId)) {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String("Invalid instanceId %1 in dungeon_qa.tsv row %2")
+            .Arg(entry->instanceId)
+            .Arg(entry->id));
+  }
+
+  std::set<int32_t> accessCIDs = {state->GetWorldCID()};
+  auto party = state->GetParty();
+  if (party) {
+    for (auto memberCID : party->GetMemberIDs()) {
+      accessCIDs.insert(memberCID);
+    }
+  }
+
+  auto instAccess = std::make_shared<objects::InstanceAccess>();
+  instAccess->SetAccessCIDs(accessCIDs);
+  instAccess->SetDefinitionID(entry->instanceId);
+  instAccess->SetVariantID(entry->variantId);
+
+  uint8_t resultCode = zoneManager->CreateInstance(instAccess);
+  if (!resultCode) {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String("Failed to create instance %1 for dungeon-qa %2")
+            .Arg(entry->instanceId)
+            .Arg(entry->id));
+  }
+  if (resultCode == 2) {
+    return SendChatMessage(
+        client, ChatType_t::CHAT_SELF,
+        libcomp::String(
+            "Instance %1 is owned by another channel; run @dungeon-qa on that "
+            "channel")
+            .Arg(entry->instanceId));
+  }
+
+  auto cState = state->GetCharacterState();
+  auto dState = state->GetDemonState();
+  auto instDef = serverDataManager->GetZoneInstanceData(entry->instanceId);
+
+  uint32_t bossZoneId = entry->zoneId;
+  uint32_t bossDynamicMapId = entry->dynamicMapId;
+  ResolveBossZone(instDef, bossZoneId, bossDynamicMapId);
+
+  if (bossZoneId > 0) {
+    float x = entry->x;
+    float y = entry->y;
+    float rot = cState->GetDestinationRotation();
+    bool havePos = entry->x != 0.f || entry->y != 0.f;
+
+    if (entry->spotId > 0) {
+      if (zoneManager->GetSpotPosition(bossDynamicMapId, entry->spotId, x, y,
+                                       rot)) {
+        havePos = true;
+      }
+    }
+
+    if (!havePos) {
+      auto zoneDef =
+          serverDataManager->GetZoneData(bossZoneId, bossDynamicMapId);
+      if (zoneDef) {
+        x = zoneDef->GetStartingX();
+        y = zoneDef->GetStartingY();
+        rot = zoneDef->GetStartingRotation();
+      }
+    }
+
+    if (!serverDataManager->ExistsInInstance(entry->instanceId, bossZoneId,
+                                             bossDynamicMapId)) {
+      return SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          libcomp::String(
+              "Boss zone %1 (%2) is not in instance %3 — fix dungeon_qa.tsv")
+              .Arg(bossZoneId)
+              .Arg(bossDynamicMapId)
+              .Arg(entry->instanceId));
+    }
+
+    if (!zoneManager->EnterZone(client, bossZoneId, bossDynamicMapId, x, y, rot,
+                                true)) {
+      return SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          libcomp::String(
+              "Entered instance %1 but failed boss zone %2 (%3)")
+              .Arg(entry->instanceId)
+              .Arg(bossZoneId)
+              .Arg(bossDynamicMapId));
+    }
+  }
+
+  auto zone = cState->GetZone();
+  auto instance = zone ? zone->GetInstance() : nullptr;
+  if (entry->dedupFlag != 0 && instance) {
+    instance->SetFlagState(entry->dedupFlag, 0, 0);
+  }
+
+  // Clear common boss-clear zone flags so repeat @dqa runs hit stock loot → payout.
+  if (instance) {
+    static const int32_t kQaZoneClearFlags[] = {1001, 1002, 1800, 2000};
+    for (const auto& instZone : instance->GetZones()) {
+      if (!instZone) {
+        continue;
+      }
+      for (int32_t flag : kQaZoneClearFlags) {
+        instZone->SetFlagState(flag, 0, 0);
+      }
+    }
+  }
+
+  if (entry->invuln) {
+    state->SetInvulnerable(true);
+  }
+
+  if (!entry->bossEvent.IsEmpty()) {
+    auto event = serverDataManager->GetEventData(entry->bossEvent);
+    if (!event) {
+      SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          libcomp::String("Warning: boss event missing: %1")
+              .Arg(entry->bossEvent));
+    } else if (!server->GetEventManager()->HandleEvent(
+                   client, entry->bossEvent, cState->GetEntityID(), zone,
+                   EventOptions())) {
+      SendChatMessage(
+          client, ChatType_t::CHAT_SELF,
+          libcomp::String("Warning: boss event did not start: %1")
+              .Arg(entry->bossEvent));
+    }
+  }
+
+  cState->RefreshCurrentPosition(server->GetServerTime());
+
+  uint32_t actualDefId = 0;
+  if (instance) {
+    actualDefId = instance->GetDefinitionID();
+  }
+
+  libcomp::String tierNote;
+  if (actualDefId != 0 && actualDefId != entry->instanceId) {
+    tierNote = libcomp::String(
+                   " WARNING: runtime instance def is %1, expected %2.")
+                   .Arg(actualDefId)
+                   .Arg(entry->instanceId);
+  }
+
+  return SendChatMessage(
+      client, ChatType_t::CHAT_SELF,
+      libcomp::String(
+          "dungeon-qa %1: %2 — instance def %3 (runtime %4), zone %5 (%6), "
+          "invuln %7. Kill boss; check CP (%8).%9 Config: dungeon_qa.tsv")
+          .Arg(entry->id)
+          .Arg(entry->label)
+          .Arg(entry->instanceId)
+          .Arg(actualDefId)
+          .Arg(bossZoneId)
+          .Arg(bossDynamicMapId)
+          .Arg(entry->invuln ? "on" : "off")
+          .Arg(entry->payoutId.IsEmpty() ? "see payout sheet" : entry->payoutId)
+          .Arg(tierNote));
 }
 
 bool ChatManager::GMCommand_Invuln(

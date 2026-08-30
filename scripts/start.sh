@@ -51,11 +51,7 @@ start_one() {
     die "${name} exited immediately; see ${logfile} and ${LOG_DIR}/"
   fi
 
-  if ! wait_for_port "${port}" 25; then
-    info "warning: ${name} started but port ${port} not open yet; check ${logfile}"
-  else
-    info "${name} listening on ${port} (pid ${pid})"
-  fi
+  require_service_up "${name}" "${port}" "${pid}" "${logfile}" 90
 }
 
 start_one comp_lobby 10666

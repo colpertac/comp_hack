@@ -100,6 +100,58 @@ wait_for_port() {
   return 1
 }
 
+# Wait until port is listening. Fails if pid exits early (2) or timeout (1).
+wait_for_listen() {
+  local port="$1"
+  local pid="$2"
+  local seconds="${3:-60}"
+  local i
+  for ((i = 0; i < seconds; i++)); do
+    if ! is_running_pid "${pid}"; then
+      return 2
+    fi
+    if ss -ltn "( sport = :${port} )" 2>/dev/null | grep -q ":${port}"; then
+      return 0
+    fi
+    sleep 1
+  done
+  if ! is_running_pid "${pid}"; then
+    return 2
+  fi
+  return 1
+}
+
+# After spawning: require process still up and port open, or fail.
+# Usage: require_service_up NAME PORT PID LOGFILE [seconds]
+require_service_up() {
+  local name="$1"
+  local port="$2"
+  local pid="$3"
+  local logfile="$4"
+  local seconds="${5:-60}"
+  local rc=0
+
+  wait_for_listen "${port}" "${pid}" "${seconds}" || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
+    info "${name} listening on ${port} (pid ${pid})"
+    return 0
+  fi
+
+  if [[ "${rc}" -eq 2 ]]; then
+    rm -f "$(pid_file "${name}")"
+    die "${name} exited before listening on ${port}; see ${logfile} and ${LOG_DIR}/ (often bad shop/payout XML)"
+  fi
+
+  # Still running but never bound — treat as failure for ops (no false "started").
+  kill "${pid}" 2>/dev/null || true
+  sleep 0.5
+  if is_running_pid "${pid}"; then
+    kill -9 "${pid}" 2>/dev/null || true
+  fi
+  rm -f "$(pid_file "${name}")"
+  die "${name} did not open port ${port} within ${seconds}s; see ${logfile} and ${LOG_DIR}/"
+}
+
 # Website Admin → Email writes this; Docker entrypoint reads it too.
 load_comp_reset_secret() {
   if [[ -n "${COMP_RESET_SECRET:-}" ]]; then

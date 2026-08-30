@@ -1987,6 +1987,8 @@ bool ActionManager::UpdatePoints(ActionContext& ctx) {
         auto accountManager = server->GetAccountManager();
         if (accountManager->IncreaseCP(account, act->GetValue())) {
           accountManager->SendCPBalance(ctx.Client);
+          // No system toast — CP balance packet already updates the client.
+          // (Stock report-trade NPCs grant CP via this action.)
         }
       }
       break;

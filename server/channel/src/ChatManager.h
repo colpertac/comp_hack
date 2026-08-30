@@ -491,6 +491,14 @@ class ChatManager {
       const std::list<libcomp::String>& args);
 
   /**
+   * GM command to enter a payout-test dungeon at the boss floor.
+   * Reads numbered rows from config/dungeon_qa.tsv (@dungeon-qa N).
+   */
+  bool GMCommand_DungeonQA(
+      const std::shared_ptr<channel::ChannelClientConnection>& client,
+      const std::list<libcomp::String>& args);
+
+  /**
    * GM command to toggle session invulnerability (@invuln / @god).
    * Ignores HP reductions for character and summoned demon until toggled off
    * or the session ends. Requires GM_CMD_LVL_INVULN.

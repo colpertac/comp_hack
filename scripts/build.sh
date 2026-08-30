@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"
 
-JOBS="${JOBS:-1}"
+JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
 RECONFIGURE="${RECONFIGURE:-0}"
 
 need_cmd cmake
