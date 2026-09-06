@@ -53,6 +53,9 @@
 #include <Character.h>
 #include <CharacterLogin.h>
 #include <CharacterProgress.h>
+#include <EntityStats.h>
+#include <FriendSettings.h>
+#include <RegisteredWorld.h>
 #include <ChatLogEntry.h>
 #include <MiShopProductData.h>
 #include <PostItem.h>
@@ -93,6 +96,9 @@ ApiHandler::ApiHandler(const std::shared_ptr<objects::LobbyConfig>& config,
       &ApiHandler::Account_ChangeDisplayName;
   mParsers["/account/change_email"] = &ApiHandler::Account_ChangeEmail;
   mParsers["/account/client_login"] = &ApiHandler::Account_ClientLogin;
+  mParsers["/account/characters"] = &ApiHandler::Account_GetCharacters;
+  mParsers["/account/friends"] = &ApiHandler::Account_Friends;
+  mParsers["/account/friends_presence"] = &ApiHandler::Account_FriendsPresence;
   mParsers["/account/register"] = &ApiHandler::Account_Register;
   mParsers["/account/recovery_email"] = &ApiHandler::Account_RecoveryEmail;
   mParsers["/account/reset_password"] = &ApiHandler::Account_ResetPassword;
@@ -280,6 +286,226 @@ bool ApiHandler::Account_GetDetails(
 
   response["character_count"] = count;
 
+  return true;
+}
+
+bool ApiHandler::Account_GetCharacters(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    const std::shared_ptr<ApiSession>& session) {
+  (void)request;
+
+  auto account =
+      objects::Account::LoadAccountByUsername(GetDatabase(), session->username);
+  if (!account) {
+    response["error"] = "Account not found.";
+    return true;
+  }
+
+  JsonBox::Array characters;
+  for (auto world : mServer->GetManagerConnection()->GetWorlds()) {
+    auto rWorld = world->GetRegisteredWorld();
+    if (!rWorld || rWorld->GetStatus() ==
+                       objects::RegisteredWorld::Status_t::INACTIVE) {
+      continue;
+    }
+
+    auto worldDB = world->GetWorldDatabase();
+    if (!worldDB) {
+      continue;
+    }
+
+    auto list = objects::Character::LoadCharacterListByAccount(
+        worldDB, account->GetUUID());
+    for (auto character : list) {
+      JsonBox::Object obj;
+      obj["name"] = character->GetName().ToUtf8();
+      obj["uuid"] = character->GetUUID().ToString();
+      obj["world_id"] = (int)rWorld->GetID();
+      obj["gender"] = (int)character->GetGender();
+      obj["last_login"] = (int)character->GetLastLogin();
+
+      int level = 0;
+      auto stats = character->GetCoreStats().Get(worldDB);
+      if (stats) {
+        level = (int)stats->GetLevel();
+      }
+      obj["level"] = level;
+
+      characters.push_back(obj);
+    }
+  }
+
+  response["characters"] = characters;
+  response["error"] = "Success";
+  return true;
+}
+
+bool ApiHandler::Account_Friends(const JsonBox::Object& request,
+                                 JsonBox::Object& response,
+                                 const std::shared_ptr<ApiSession>& session) {
+  auto account =
+      objects::Account::LoadAccountByUsername(GetDatabase(), session->username);
+  if (!account) {
+    response["error"] = "Account not found.";
+    return true;
+  }
+
+  libcomp::String characterName;
+  auto it = request.find("character");
+  if (it != request.end()) {
+    characterName = it->second.getString();
+  }
+  if (characterName.IsEmpty()) {
+    response["error"] = "character is required.";
+    return true;
+  }
+
+  std::shared_ptr<objects::Character> owned;
+  std::shared_ptr<libcomp::Database> ownedDB;
+  for (auto world : mServer->GetManagerConnection()->GetWorlds()) {
+    auto worldDB = world->GetWorldDatabase();
+    if (!worldDB) {
+      continue;
+    }
+    auto character =
+        objects::Character::LoadCharacterByName(worldDB, characterName);
+    if (character && character->GetAccount() == account->GetUUID()) {
+      owned = character;
+      ownedDB = worldDB;
+      break;
+    }
+  }
+
+  if (!owned || !ownedDB) {
+    response["error"] = "Character not found on this account.";
+    return true;
+  }
+
+  auto fSettings = objects::FriendSettings::LoadFriendSettingsByCharacter(
+      ownedDB, owned->GetUUID());
+  JsonBox::Array friends;
+  if (fSettings) {
+    for (auto friendUUID : fSettings->GetFriends()) {
+      if (friendUUID.IsNull()) {
+        continue;
+      }
+      JsonBox::Object obj;
+      obj["uuid"] = friendUUID.ToString();
+
+      auto friendChar =
+          libcomp::PersistentObject::LoadObjectByUUID<objects::Character>(
+              ownedDB, friendUUID);
+      if (friendChar) {
+        obj["name"] = friendChar->GetName().ToUtf8();
+      } else {
+        // Friend may live on another world DB — search all worlds.
+        for (auto world : mServer->GetManagerConnection()->GetWorlds()) {
+          auto worldDB = world->GetWorldDatabase();
+          if (!worldDB) {
+            continue;
+          }
+          friendChar =
+              libcomp::PersistentObject::LoadObjectByUUID<objects::Character>(
+                  worldDB, friendUUID);
+          if (friendChar) {
+            obj["name"] = friendChar->GetName().ToUtf8();
+            break;
+          }
+        }
+      }
+      if (obj.find("name") == obj.end()) {
+        obj["name"] = "";
+      }
+      friends.push_back(obj);
+    }
+  }
+
+  response["character"] = owned->GetName().ToUtf8();
+  response["friends"] = friends;
+  response["error"] = "Success";
+  return true;
+}
+
+bool ApiHandler::Account_FriendsPresence(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    const std::shared_ptr<ApiSession>& session) {
+  // Reuse friends list, then attach live login status (no zone by default).
+  if (!Account_Friends(request, response, session)) {
+    return false;
+  }
+  if (response.find("error") != response.end() &&
+      response["error"].getString() != "Success") {
+    return true;
+  }
+
+  auto lobbyDB = GetDatabase();
+  JsonBox::Array enriched;
+  auto friendsIt = response.find("friends");
+  if (friendsIt == response.end()) {
+    response["error"] = "Success";
+    return true;
+  }
+
+  JsonBox::Array friendsArr = friendsIt->second.getArray();
+  for (auto& friendVal : friendsArr) {
+    auto obj = friendVal.getObject();
+    libcomp::String name;
+    auto nameIt = obj.find("name");
+    if (nameIt != obj.end()) {
+      name = nameIt->second.getString();
+    }
+
+    obj["status"] = "Offline";
+    // MVP: omit zone; world/channel when online.
+
+    if (!name.IsEmpty()) {
+      for (auto world : mServer->GetManagerConnection()->GetWorlds()) {
+        auto worldDB = world->GetWorldDatabase();
+        if (!worldDB) {
+          continue;
+        }
+        auto character =
+            objects::Character::LoadCharacterByName(worldDB, name);
+        if (!character) {
+          continue;
+        }
+
+        auto friendAccount =
+            libcomp::PersistentObject::LoadObjectByUUID<objects::Account>(
+                lobbyDB, character->GetAccount());
+        if (!friendAccount) {
+          break;
+        }
+
+        auto login =
+            mAccountManager->GetUserLogin(friendAccount->GetUsername());
+        auto cLogin = login ? login->GetCharacterLogin() : nullptr;
+        if (!login) {
+          obj["status"] = "Offline";
+        } else if (cLogin && cLogin->GetWorldID() >= 0) {
+          // Only report presence if the logged-in character matches.
+          auto loginChar = cLogin->GetCharacter().GetUUID();
+          if (loginChar == character->GetUUID() || loginChar.IsNull()) {
+            obj["status"] = "Online";
+            obj["world_id"] = (int)cLogin->GetWorldID();
+            if (cLogin->GetChannelID() >= 0) {
+              obj["channel_id"] = (int)cLogin->GetChannelID();
+            }
+          } else {
+            obj["status"] = "Offline";
+          }
+        } else {
+          obj["status"] = "Lobby";
+        }
+        break;
+      }
+    }
+
+    enriched.push_back(obj);
+  }
+
+  response["friends"] = enriched;
+  response["error"] = "Success";
   return true;
 }
 
