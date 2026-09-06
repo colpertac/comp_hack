@@ -171,6 +171,9 @@ class ApiHandler : public CivetHandler {
   bool Admin_PostItems(const JsonBox::Object& request,
                        JsonBox::Object& response,
                        const std::shared_ptr<ApiSession>& session);
+  bool Admin_GrantCustomItems(const JsonBox::Object& request,
+                              JsonBox::Object& response,
+                              const std::shared_ptr<ApiSession>& session);
   bool Admin_GetPromos(const JsonBox::Object& request,
                        JsonBox::Object& response,
                        const std::shared_ptr<ApiSession>& session);

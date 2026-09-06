@@ -86,9 +86,40 @@ bool Parsers::PostItem::Parse(
       // the post is more damaging to the player than a server caused
       // duplication so only delete the post item after the item has been
       // created.
-      std::unordered_map<uint32_t, uint32_t> items;
-      items[productData->GetItem()] = productData->GetStack();
-      success = characterManager->AddRemoveItems(client, items, true);
+      bool isCustom = postItem->GetBasicEffect() != 0 ||
+                      postItem->GetSpecialEffect() != 0 ||
+                      postItem->GetTarot() != 0 || postItem->GetSoul() != 0;
+
+      if (isCustom) {
+        auto item =
+            characterManager->GenerateItem(productData->GetItem(), 1);
+        if (item) {
+          if (postItem->GetBasicEffect()) {
+            item->SetBasicEffect(postItem->GetBasicEffect());
+          }
+          if (postItem->GetSpecialEffect()) {
+            item->SetSpecialEffect(postItem->GetSpecialEffect());
+          }
+          if (postItem->GetTarot()) {
+            item->SetTarot(postItem->GetTarot());
+          }
+          if (postItem->GetSoul()) {
+            item->SetSoul(postItem->GetSoul());
+          }
+
+          std::list<std::shared_ptr<objects::Item>> insertItems;
+          insertItems.push_back(item);
+          std::unordered_map<std::shared_ptr<objects::Item>, uint16_t>
+              stackAdjustItems;
+          success = characterManager->UpdateItems(client, false, insertItems,
+                                                  stackAdjustItems);
+        }
+      } else {
+        std::unordered_map<uint32_t, uint32_t> items;
+        items[productData->GetItem()] = productData->GetStack();
+        success = characterManager->AddRemoveItems(client, items, true);
+      }
+
       if (success && !postItem->Delete(lobbyDB)) {
         // If this fails we don't have a good way to recover, disconnect
         // the player so they don't get into an invalid state

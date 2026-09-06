@@ -57,6 +57,8 @@
 #include <FriendSettings.h>
 #include <RegisteredWorld.h>
 #include <ChatLogEntry.h>
+#include <MiEnchantData.h>
+#include <MiItemData.h>
 #include <MiShopProductData.h>
 #include <PostItem.h>
 #include <Promo.h>
@@ -113,6 +115,7 @@ ApiHandler::ApiHandler(const std::shared_ptr<objects::LobbyConfig>& config,
   mParsers["/admin/list_reports"] = &ApiHandler::Admin_ListReports;
   mParsers["/admin/resolve_report"] = &ApiHandler::Admin_ResolveReport;
   mParsers["/admin/post_items"] = &ApiHandler::Admin_PostItems;
+  mParsers["/admin/grant_custom_items"] = &ApiHandler::Admin_GrantCustomItems;
   mParsers["/admin/get_promos"] = &ApiHandler::Admin_GetPromos;
   mParsers["/admin/create_promo"] = &ApiHandler::Admin_CreatePromo;
   mParsers["/admin/delete_promo"] = &ApiHandler::Admin_DeletePromo;
@@ -126,6 +129,8 @@ ApiHandler::ApiHandler(const std::shared_ptr<objects::LobbyConfig>& config,
 
   mDefinitionManager->LoadData<objects::MiShopProductData>(
       server->GetDataStore());
+  mDefinitionManager->LoadData<objects::MiItemData>(server->GetDataStore());
+  mDefinitionManager->LoadData<objects::MiEnchantData>(server->GetDataStore());
 
   auto serverDataManager = new libcomp::ServerDataManager;
   bool scriptsLoaded = false;
@@ -1889,6 +1894,225 @@ bool ApiHandler::Admin_PostItems(const JsonBox::Object& request,
     postItem->SetType(productID);
     postItem->SetTimestamp(now);
     postItem->SetAccount(account);
+
+    opChangeset->Insert(postItem);
+  }
+
+  if (!mainDB->ProcessChangeSet(opChangeset)) {
+    response["error"] = "Purchase failed.";
+
+    return true;
+  }
+
+  auto login = mAccountManager->GetUserLogin(account->GetUsername());
+  auto cLogin = login ? login->GetCharacterLogin() : nullptr;
+  if (cLogin && cLogin->GetWorldID() >= 0) {
+    // Sync the new value and relay the CP update to the channel so this
+    // call works while logged in too
+    libcomp::Packet relay;
+    relay.WritePacketCode(InternalPacketCode_t::PACKET_RELAY);
+    relay.WriteS32Little(cLogin->GetWorldCID());  // Source (self to self)
+    relay.WriteU8((uint8_t)PacketRelayMode_t::RELAY_CIDS);
+    relay.WriteU16Little(1);                      // CID count
+    relay.WriteS32Little(cLogin->GetWorldCID());  // Target
+
+    relay.WritePacketCode(ChannelToClientPacketCode_t::PACKET_CASH_BALANCE);
+    relay.WriteS64Little((int64_t)account->GetCP());
+
+    auto world = mServer->GetManagerConnection()->GetWorldByID(
+        (uint8_t)cLogin->GetWorldID());
+    auto worldConnection = world ? world->GetConnection() : nullptr;
+    if (worldConnection) {
+      worldConnection->SendPacket(relay);
+    }
+
+    mServer->GetLobbySyncManager()->SyncRecordUpdate(account, "Account");
+  }
+
+  response["error"] = "Success";
+  response["cp"] = (int)account->GetCP();
+
+  return true;
+}
+
+bool ApiHandler::Admin_GrantCustomItems(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    const std::shared_ptr<ApiSession>& session) {
+  (void)session;
+
+  if (!HaveUserLevel(response, session, SVR_CONST.API_ADMIN_LVL_POST_ITEMS)) {
+    return true;
+  }
+
+  auto account = GetAccount(request, response);
+  if (!account) {
+    return true;
+  }
+
+  int32_t cpCost = 0;
+  JsonBox::Array items;
+
+  auto it = request.find("cp");
+
+  if (it != request.end()) {
+    cpCost = it->second.getInteger();
+  }
+
+  if (cpCost < 0) {
+    response["error"] = "Cannot add CP via post purchase.";
+
+    return true;
+  } else if (cpCost > 0 && (uint32_t)cpCost > account->GetCP()) {
+    response["error"] = "Not enough CP.";
+
+    return true;
+  }
+
+  it = request.find("items");
+
+  if (it != request.end()) {
+    items = it->second.getArray();
+  }
+
+  if (items.empty()) {
+    response["error"] = "No item specified.";
+
+    return true;
+  }
+
+  struct CustomPostGrant {
+    uint32_t productID;
+    uint32_t basicEffect;
+    uint32_t specialEffect;
+    int16_t tarot;
+    int16_t soul;
+  };
+
+  std::list<CustomPostGrant> grants;
+  for (auto& entry : items) {
+    if (!entry.isObject()) {
+      response["error"] = "Invalid item entry.";
+
+      return true;
+    }
+
+    auto obj = entry.getObject();
+    auto productIt = obj.find("productId");
+    if (productIt == obj.end()) {
+      // Allow productID alias
+      productIt = obj.find("productID");
+    }
+    if (productIt == obj.end()) {
+      response["error"] = "Missing productId.";
+
+      return true;
+    }
+
+    CustomPostGrant grant;
+    grant.productID = (uint32_t)productIt->second.getInteger();
+    grant.basicEffect = 0;
+    grant.specialEffect = 0;
+    grant.tarot = 0;
+    grant.soul = 0;
+
+    auto fieldIt = obj.find("basicEffect");
+    if (fieldIt != obj.end()) {
+      grant.basicEffect = (uint32_t)fieldIt->second.getInteger();
+    }
+    fieldIt = obj.find("specialEffect");
+    if (fieldIt != obj.end()) {
+      grant.specialEffect = (uint32_t)fieldIt->second.getInteger();
+    }
+    fieldIt = obj.find("tarot");
+    if (fieldIt != obj.end()) {
+      grant.tarot = (int16_t)fieldIt->second.getInteger();
+    }
+    fieldIt = obj.find("soul");
+    if (fieldIt != obj.end()) {
+      grant.soul = (int16_t)fieldIt->second.getInteger();
+    }
+
+    auto productData = mDefinitionManager->GetShopProductData(grant.productID);
+    if (!productData) {
+      response["error"] = "Invalid product.";
+
+      return true;
+    }
+
+    uint32_t baseItemID = productData->GetItem();
+    if (!mDefinitionManager->GetItemData(baseItemID)) {
+      response["error"] = "Invalid product item.";
+
+      return true;
+    }
+
+    if (grant.basicEffect &&
+        !mDefinitionManager->GetItemData(grant.basicEffect)) {
+      response["error"] = "Invalid basicEffect.";
+
+      return true;
+    }
+
+    if (grant.specialEffect &&
+        !mDefinitionManager->GetItemData(grant.specialEffect)) {
+      response["error"] = "Invalid specialEffect.";
+
+      return true;
+    }
+
+    if (grant.tarot && !mDefinitionManager->GetEnchantData(grant.tarot)) {
+      response["error"] = "Invalid tarot.";
+
+      return true;
+    }
+
+    if (grant.soul && !mDefinitionManager->GetEnchantData(grant.soul)) {
+      response["error"] = "Invalid soul.";
+
+      return true;
+    }
+
+    // Custom grants must actually customize something; otherwise use
+    // /admin/post_items.
+    if (!grant.basicEffect && !grant.specialEffect && !grant.tarot &&
+        !grant.soul) {
+      response["error"] = "No custom fields specified.";
+
+      return true;
+    }
+
+    grants.push_back(grant);
+  }
+
+  auto mainDB = mServer->GetMainDatabase();
+
+  auto postItems =
+      objects::PostItem::LoadPostItemListByAccount(mainDB, account);
+  if ((postItems.size() + grants.size()) >= MAX_POST_ITEM_COUNT) {
+    response["error"] = "Maximum post item count exceeded.";
+
+    return true;
+  }
+
+  uint32_t now = (uint32_t)std::time(0);
+
+  auto opChangeset = std::make_shared<libcomp::DBOperationalChangeSet>();
+
+  if (cpCost) {
+    auto expl = std::make_shared<libcomp::DBExplicitUpdate>(account);
+    expl->SubtractFrom<int64_t>("CP", cpCost, (int64_t)account->GetCP());
+    opChangeset->AddOperation(expl);
+  }
+
+  for (auto& grant : grants) {
+    auto postItem = libcomp::PersistentObject::New<objects::PostItem>(true);
+    postItem->SetType(grant.productID);
+    postItem->SetTimestamp(now);
+    postItem->SetAccount(account);
+    postItem->SetBasicEffect(grant.basicEffect);
+    postItem->SetSpecialEffect(grant.specialEffect);
+    postItem->SetTarot(grant.tarot);
+    postItem->SetSoul(grant.soul);
 
     opChangeset->Insert(postItem);
   }
