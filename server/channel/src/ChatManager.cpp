@@ -1081,7 +1081,8 @@ bool ChatManager::GMCommand_ClearInventory(
     const std::shared_ptr<channel::ChannelClientConnection>& client,
     const std::list<libcomp::String>& args) {
   (void)args;
-  if (!HaveUserLevel(client, SVR_CONST.GM_CMD_LVL_SCRAP)) {
+  // Self-only wipe; gated by ITEM (Creative) — not SCRAP (other-player wipe).
+  if (!HaveUserLevel(client, SVR_CONST.GM_CMD_LVL_ITEM)) {
     return true;
   }
 
@@ -3550,7 +3551,7 @@ bool ChatManager::GMCommand_Instance(
 bool ChatManager::GMCommand_DungeonQA(
     const std::shared_ptr<channel::ChannelClientConnection>& client,
     const std::list<libcomp::String>& args) {
-  if (!HaveUserLevel(client, SVR_CONST.GM_CMD_LVL_INSTANCE)) {
+  if (!HaveUserLevel(client, SVR_CONST.GM_CMD_LVL_DUNGEON_QA)) {
     return true;
   }
 
