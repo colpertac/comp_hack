@@ -22,3 +22,6 @@ tools/sandman
 
 # Annoying mac files
 .DS_Store
+
+# Casino Flash binaries (upload via admin UI; do not commit)
+contrib/webroot/casino/**/*.swf

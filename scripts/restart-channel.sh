@@ -13,6 +13,45 @@ need_cmd ss
 NAME=comp_channel
 PORT=14666
 
+# World keeps RegisteredChannel rows until disconnect is processed. A fast
+# restart (or kill -9) leaves a stale row → next start fails with
+# "failed to register with the world's database". Wait for world to clear,
+# then delete any leftover before we start again.
+clear_stale_channel_registration() {
+  local db="${DATABASE_DIR}/world.sqlite3"
+  local count=0
+
+  [[ -f "${db}" ]] || return 0
+  command -v python3 >/dev/null 2>&1 || {
+    info "python3 missing; cannot clear RegisteredChannel (restart may fail)"
+    return 0
+  }
+
+  for _ in $(seq 1 40); do
+    count="$(
+      python3 - "${db}" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+print(db.execute("SELECT COUNT(*) FROM RegisteredChannel").fetchone()[0])
+db.close()
+PY
+    )"
+    if [[ "${count}" == "0" ]]; then
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  info "clearing ${count} stale RegisteredChannel row(s) in ${db}"
+  python3 - "${db}" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute("DELETE FROM RegisteredChannel")
+db.commit()
+db.close()
+PY
+}
+
 stop_one() {
   local pidfile pid
 
@@ -20,6 +59,7 @@ stop_one() {
   if [[ ! -f "${pidfile}" ]]; then
     pkill -f "$(bin_path "${NAME}")" 2>/dev/null || true
     info "${NAME}: no pid file"
+    clear_stale_channel_registration
     return
   fi
 
@@ -27,18 +67,21 @@ stop_one() {
   if is_running_pid "${pid}"; then
     info "stopping ${NAME} (pid ${pid})"
     kill "${pid}" 2>/dev/null || true
-    for _ in $(seq 1 20); do
+    # Give world time to unregister before we escalate (was ~5s).
+    for _ in $(seq 1 40); do
       is_running_pid "${pid}" || break
       sleep 0.25
     done
     if is_running_pid "${pid}"; then
       info "force killing ${NAME}"
       kill -9 "${pid}" 2>/dev/null || true
+      sleep 0.5
     fi
   else
     info "${NAME}: not running"
   fi
   rm -f "${pidfile}"
+  clear_stale_channel_registration
 }
 
 start_one() {
