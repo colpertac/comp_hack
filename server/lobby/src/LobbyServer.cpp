@@ -215,7 +215,9 @@ void LobbyServer::SendWorldList(
       p.WriteString16Little(libcomp::Convert::ENCODING_UTF8, channel->GetName(),
                             true);
 
-      // Ping time??? Again, something that used to be in the list.
+      // Latency / load field (client reads high byte as % for Good/OK/Busy/Full
+      // at ImagineClient 0x7BACF2). Stock value was 1; writing 0 broke Start Game
+      // after the Busy-prefix experiment. Keep non-zero until a real load metric.
       p.WriteU16Little(1);
 
       // 0 - Visible | 2 - Hidden (or PvP)
