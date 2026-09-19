@@ -32,9 +32,11 @@
 #include <cstring>
 #include <cstdlib>
 #include <ctime>
+#include <regex>
 #include <vector>
 #include <BaseServer.h>
 #include <CString.h>
+#include <Constants.h>
 #include <Crypto.h>
 #include <DatabaseConfigMariaDB.h>
 #include <DatabaseConfigSQLite3.h>
@@ -55,14 +57,19 @@
 #include <CharacterProgress.h>
 #include <EntityStats.h>
 #include <FriendSettings.h>
-#include <RegisteredWorld.h>
-#include <ChatLogEntry.h>
+#include <Item.h>
+#include <ItemBox.h>
+#include <LobbyConfig.h>
 #include <MiEnchantData.h>
 #include <MiItemData.h>
+#include <MiPossessionData.h>
 #include <MiShopProductData.h>
+#include <MiUseRestrictionsData.h>
 #include <PostItem.h>
 #include <Promo.h>
 #include <PromoExchange.h>
+#include <RegisteredWorld.h>
+#include <ChatLogEntry.h>
 #include <ReportedPlayer.h>
 #include <WebGameSession.h>
 
@@ -119,6 +126,13 @@ ApiHandler::ApiHandler(const std::shared_ptr<objects::LobbyConfig>& config,
   mParsers["/admin/get_promos"] = &ApiHandler::Admin_GetPromos;
   mParsers["/admin/create_promo"] = &ApiHandler::Admin_CreatePromo;
   mParsers["/admin/delete_promo"] = &ApiHandler::Admin_DeletePromo;
+  mParsers["/admin/rename_character"] = &ApiHandler::Admin_RenameCharacter;
+  mParsers["/admin/delete_character"] = &ApiHandler::Admin_DeleteCharacter;
+  mParsers["/admin/transfer_character"] = &ApiHandler::Admin_TransferCharacter;
+  mParsers["/admin/get_character_inventory"] =
+      &ApiHandler::Admin_GetCharacterInventory;
+  mParsers["/admin/update_character_inventory"] =
+      &ApiHandler::Admin_UpdateCharacterInventory;
   mParsers["/webgame/get_coins"] = &ApiHandler::WebGame_GetCoins;
   mParsers["/webgame/start"] = &ApiHandler::WebGame_Start;
   mParsers["/webgame/update"] = &ApiHandler::WebGame_Update;
@@ -2380,6 +2394,533 @@ bool ApiHandler::Admin_DeletePromo(const JsonBox::Object& request,
   return true;
 }
 
+bool ApiHandler::RequireAccountOffline(const libcomp::String& username,
+                                       JsonBox::Object& response) {
+  auto login = mAccountManager->GetUserLogin(username);
+  if (!login) {
+    return true;
+  }
+
+  auto cLogin = login->GetCharacterLogin();
+  if (cLogin && cLogin->GetWorldID() >= 0) {
+    response["error"] = "character_online";
+    return false;
+  }
+
+  // Any lobby session still holds live character list state — refuse mutate.
+  response["error"] = "character_online";
+  return false;
+}
+
+bool ApiHandler::ResolveCharacter(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    std::shared_ptr<objects::Character>& character,
+    std::shared_ptr<World>& world,
+    std::shared_ptr<libcomp::Database>& worldDB) {
+  character.reset();
+  world.reset();
+  worldDB.reset();
+
+  libcomp::String uuidStr;
+  libcomp::String name;
+
+  auto it = request.find("character_uuid");
+  if (it != request.end()) {
+    uuidStr = it->second.getString();
+  }
+  it = request.find("character_name");
+  if (it != request.end()) {
+    name = it->second.getString();
+  }
+
+  if (uuidStr.IsEmpty() && name.IsEmpty()) {
+    response["error"] = "character_uuid or character_name is required.";
+    return false;
+  }
+
+  // Optional world_id narrows the search; otherwise scan all active worlds.
+  std::list<std::shared_ptr<World>> worlds;
+  it = request.find("world_id");
+  if (it != request.end()) {
+    auto w = GetWorld(request, response);
+    if (!w) {
+      return false;
+    }
+    worlds.push_back(w);
+  } else {
+    for (auto w : mServer->GetManagerConnection()->GetWorlds()) {
+      auto rWorld = w->GetRegisteredWorld();
+      if (!rWorld || rWorld->GetStatus() ==
+                         objects::RegisteredWorld::Status_t::INACTIVE) {
+        continue;
+      }
+      if (!w->GetWorldDatabase()) {
+        continue;
+      }
+      worlds.push_back(w);
+    }
+  }
+
+  libobjgen::UUID uuid;
+  if (!uuidStr.IsEmpty()) {
+    uuid = libobjgen::UUID(uuidStr.C());
+    if (uuid.IsNull()) {
+      response["error"] = "Invalid character_uuid.";
+      return false;
+    }
+  }
+
+  for (auto w : worlds) {
+    auto db = w->GetWorldDatabase();
+    std::shared_ptr<objects::Character> found;
+    if (!uuid.IsNull()) {
+      found = libcomp::PersistentObject::LoadObjectByUUID<objects::Character>(
+          db, uuid);
+    } else {
+      found = objects::Character::LoadCharacterByName(db, name);
+    }
+    if (found) {
+      character = found;
+      world = w;
+      worldDB = db;
+      return true;
+    }
+  }
+
+  response["error"] = "Character not found.";
+  return false;
+}
+
+bool ApiHandler::Admin_RenameCharacter(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    const std::shared_ptr<ApiSession>& session) {
+  if (!HaveUserLevel(response, session,
+                     SVR_CONST.API_ADMIN_LVL_UPDATE_ACCOUNT)) {
+    return true;
+  }
+
+  std::shared_ptr<objects::Character> character;
+  std::shared_ptr<World> world;
+  std::shared_ptr<libcomp::Database> worldDB;
+  if (!ResolveCharacter(request, response, character, world, worldDB)) {
+    return true;
+  }
+
+  auto lobbyDB = mServer->GetMainDatabase();
+  auto account =
+      libcomp::PersistentObject::LoadObjectByUUID<objects::Account>(
+          lobbyDB, character->GetAccount());
+  if (!account) {
+    response["error"] = "Account not found.";
+    return true;
+  }
+
+  if (!RequireAccountOffline(account->GetUsername(), response)) {
+    return true;
+  }
+
+  libcomp::String newName;
+  auto it = request.find("new_name");
+  if (it != request.end()) {
+    newName = it->second.getString();
+  }
+  if (newName.IsEmpty() || newName.Length() > 32) {
+    response["error"] = "Invalid new_name.";
+    return true;
+  }
+
+  if (newName == character->GetName()) {
+    response["error"] = "Success";
+    response["name"] = newName.ToUtf8();
+    return true;
+  }
+
+  if (objects::Character::LoadCharacterByName(worldDB, newName)) {
+    response["error"] = "Name already in use.";
+    return true;
+  }
+
+  auto config =
+      std::dynamic_pointer_cast<objects::LobbyConfig>(mServer->GetConfig());
+  if (config && !config->GetCharacterNameRegex().IsEmpty()) {
+    std::smatch match;
+    std::string input(newName.C());
+    std::regex toFind(config->GetCharacterNameRegex().C());
+    if (!std::regex_match(input, match, toFind)) {
+      response["error"] = "Invalid new_name.";
+      return true;
+    }
+  }
+
+  libcomp::String oldName = character->GetName();
+  character->SetName(newName);
+  if (!character->Update(worldDB)) {
+    response["error"] = "Failed to rename character.";
+    return true;
+  }
+
+  response["error"] = "Success";
+  response["old_name"] = oldName.ToUtf8();
+  response["name"] = newName.ToUtf8();
+  return true;
+}
+
+bool ApiHandler::Admin_DeleteCharacter(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    const std::shared_ptr<ApiSession>& session) {
+  if (!HaveUserLevel(response, session,
+                     SVR_CONST.API_ADMIN_LVL_DELETE_ACCOUNT)) {
+    return true;
+  }
+
+  std::shared_ptr<objects::Character> character;
+  std::shared_ptr<World> world;
+  std::shared_ptr<libcomp::Database> worldDB;
+  if (!ResolveCharacter(request, response, character, world, worldDB)) {
+    return true;
+  }
+
+  auto lobbyDB = mServer->GetMainDatabase();
+  auto account =
+      libcomp::PersistentObject::LoadObjectByUUID<objects::Account>(
+          lobbyDB, character->GetAccount());
+  if (!account) {
+    response["error"] = "Account not found.";
+    return true;
+  }
+
+  if (!RequireAccountOffline(account->GetUsername(), response)) {
+    return true;
+  }
+
+  libcomp::String name = character->GetName();
+  if (!mAccountManager->DeleteCharacter(account, character)) {
+    response["error"] = "Failed to delete character.";
+    return true;
+  }
+
+  response["error"] = "Success";
+  response["name"] = name.ToUtf8();
+  return true;
+}
+
+bool ApiHandler::Admin_TransferCharacter(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    const std::shared_ptr<ApiSession>& session) {
+  if (!HaveUserLevel(response, session,
+                     SVR_CONST.API_ADMIN_LVL_UPDATE_ACCOUNT)) {
+    return true;
+  }
+
+  std::shared_ptr<objects::Character> character;
+  std::shared_ptr<World> world;
+  std::shared_ptr<libcomp::Database> worldDB;
+  if (!ResolveCharacter(request, response, character, world, worldDB)) {
+    return true;
+  }
+
+  libcomp::String toUsername;
+  auto it = request.find("to_username");
+  if (it != request.end()) {
+    toUsername = libcomp::String(it->second.getString()).ToLower();
+  }
+  if (toUsername.IsEmpty()) {
+    response["error"] = "to_username is required.";
+    return true;
+  }
+
+  auto lobbyDB = mServer->GetMainDatabase();
+  auto sourceAccount =
+      libcomp::PersistentObject::LoadObjectByUUID<objects::Account>(
+          lobbyDB, character->GetAccount());
+  if (!sourceAccount) {
+    response["error"] = "Source account not found.";
+    return true;
+  }
+
+  auto destAccount =
+      objects::Account::LoadAccountByUsername(lobbyDB, toUsername);
+  if (!destAccount) {
+    response["error"] = "Destination account not found.";
+    return true;
+  }
+
+  if (sourceAccount->GetUUID() == destAccount->GetUUID()) {
+    response["error"] = "Source and destination accounts are the same.";
+    return true;
+  }
+
+  if (!RequireAccountOffline(sourceAccount->GetUsername(), response) ||
+      !RequireAccountOffline(destAccount->GetUsername(), response)) {
+    return true;
+  }
+
+  libcomp::String name = character->GetName();
+  if (!mAccountManager->TransferCharacter(sourceAccount, destAccount, character,
+                                          worldDB)) {
+    response["error"] = "Failed to transfer character.";
+    return true;
+  }
+
+  response["error"] = "Success";
+  response["name"] = name.ToUtf8();
+  response["from_username"] = sourceAccount->GetUsername().ToUtf8();
+  response["to_username"] = destAccount->GetUsername().ToUtf8();
+  return true;
+}
+
+bool ApiHandler::Admin_GetCharacterInventory(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    const std::shared_ptr<ApiSession>& session) {
+  if (!HaveUserLevel(response, session,
+                     SVR_CONST.API_ADMIN_LVL_GET_ACCOUNT)) {
+    return true;
+  }
+
+  std::shared_ptr<objects::Character> character;
+  std::shared_ptr<World> world;
+  std::shared_ptr<libcomp::Database> worldDB;
+  if (!ResolveCharacter(request, response, character, world, worldDB)) {
+    return true;
+  }
+
+  auto inventory = character->GetItemBoxes(0).Get(worldDB);
+  if (!inventory) {
+    response["error"] = "Character has no inventory.";
+    return true;
+  }
+
+  JsonBox::Array slots;
+  for (size_t i = 0; i < 50; i++) {
+    JsonBox::Object slot;
+    slot["slot"] = (int)(i + 1);
+    auto item = inventory->GetItems(i).Get(worldDB);
+    if (item) {
+      slot["empty"] = false;
+      slot["uid"] = item->GetUUID().ToString();
+      slot["type"] = (int)item->GetType();
+      slot["stack_size"] = (int)item->GetStackSize();
+
+      bool equipped = false;
+      for (size_t e = 0; e < character->EquippedItemsCount(); e++) {
+        if (character->GetEquippedItems(e).GetUUID() == item->GetUUID()) {
+          equipped = true;
+          break;
+        }
+      }
+      slot["equipped"] = equipped;
+    } else {
+      slot["empty"] = true;
+    }
+    slots.push_back(slot);
+  }
+
+  response["character_name"] = character->GetName().ToUtf8();
+  response["character_uuid"] = character->GetUUID().ToString();
+  response["slots"] = slots;
+  response["error"] = "Success";
+  return true;
+}
+
+bool ApiHandler::Admin_UpdateCharacterInventory(
+    const JsonBox::Object& request, JsonBox::Object& response,
+    const std::shared_ptr<ApiSession>& session) {
+  if (!HaveUserLevel(response, session,
+                     SVR_CONST.API_ADMIN_LVL_UPDATE_ACCOUNT)) {
+    return true;
+  }
+
+  std::shared_ptr<objects::Character> character;
+  std::shared_ptr<World> world;
+  std::shared_ptr<libcomp::Database> worldDB;
+  if (!ResolveCharacter(request, response, character, world, worldDB)) {
+    return true;
+  }
+
+  auto lobbyDB = mServer->GetMainDatabase();
+  auto account =
+      libcomp::PersistentObject::LoadObjectByUUID<objects::Account>(
+          lobbyDB, character->GetAccount());
+  if (!account) {
+    response["error"] = "Account not found.";
+    return true;
+  }
+
+  if (!RequireAccountOffline(account->GetUsername(), response)) {
+    return true;
+  }
+
+  auto inventory = character->GetItemBoxes(0).Get(worldDB);
+  if (!inventory) {
+    response["error"] = "Character has no inventory.";
+    return true;
+  }
+
+  JsonBox::Array ops;
+  auto it = request.find("ops");
+  if (it != request.end()) {
+    ops = it->second.getArray();
+  }
+  if (ops.empty()) {
+    response["error"] = "ops is required.";
+    return true;
+  }
+
+  auto isEquipped = [&](const libobjgen::UUID& itemUUID) -> bool {
+    if (itemUUID.IsNull()) {
+      return false;
+    }
+    for (size_t e = 0; e < character->EquippedItemsCount(); e++) {
+      if (character->GetEquippedItems(e).GetUUID() == itemUUID) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  for (auto opVal : ops) {
+    auto opObj = opVal.getObject();
+    libcomp::String op;
+    auto opIt = opObj.find("op");
+    if (opIt != opObj.end()) {
+      op = opIt->second.getString();
+    }
+
+    int slot1 = 0;
+    opIt = opObj.find("slot");
+    if (opIt != opObj.end()) {
+      slot1 = opIt->second.getInteger();
+    }
+    if (slot1 < 1 || slot1 > 50) {
+      response["error"] = "slot must be 1-50.";
+      return true;
+    }
+    size_t slot = (size_t)(slot1 - 1);
+
+    auto existing = inventory->GetItems(slot).Get(worldDB);
+
+    if (op == "remove") {
+      if (!existing) {
+        continue;
+      }
+      if (isEquipped(existing->GetUUID())) {
+        response["error"] = "Cannot remove equipped item; unequip in-game first.";
+        return true;
+      }
+      inventory->SetItems(slot, NULLUUID);
+      if (!existing->Delete(worldDB)) {
+        response["error"] = "Failed to delete item.";
+        return true;
+      }
+    } else if (op == "set_qty") {
+      if (!existing) {
+        response["error"] = "Cannot set qty on empty slot.";
+        return true;
+      }
+      if (isEquipped(existing->GetUUID())) {
+        response["error"] = "Cannot edit equipped item quantity.";
+        return true;
+      }
+      int qty = 1;
+      opIt = opObj.find("stack_size");
+      if (opIt != opObj.end()) {
+        qty = opIt->second.getInteger();
+      }
+      auto def = mDefinitionManager->GetItemData(existing->GetType());
+      uint16_t maxStack = def && def->GetPossession()
+                              ? def->GetPossession()->GetStackSize()
+                              : (uint16_t)1;
+      if (maxStack < 1) {
+        maxStack = 1;
+      }
+      if (qty < 1 || qty > (int)maxStack) {
+        response["error"] = "stack_size out of range.";
+        return true;
+      }
+      existing->SetStackSize((uint16_t)qty);
+      if (!existing->Update(worldDB)) {
+        response["error"] = "Failed to update item quantity.";
+        return true;
+      }
+    } else if (op == "set" || op == "add") {
+      int itemType = 0;
+      opIt = opObj.find("item_type");
+      if (opIt != opObj.end()) {
+        itemType = opIt->second.getInteger();
+      }
+      if (itemType <= 0) {
+        response["error"] = "item_type is required.";
+        return true;
+      }
+      auto def = mDefinitionManager->GetItemData((uint32_t)itemType);
+      if (!def || !def->GetPossession()) {
+        response["error"] = "Invalid item_type.";
+        return true;
+      }
+      int qty = 1;
+      opIt = opObj.find("stack_size");
+      if (opIt != opObj.end()) {
+        qty = opIt->second.getInteger();
+      }
+      uint16_t maxStack = def->GetPossession()->GetStackSize();
+      if (maxStack < 1) {
+        maxStack = 1;
+      }
+      if (qty < 1 || qty > (int)maxStack) {
+        response["error"] = "stack_size out of range.";
+        return true;
+      }
+
+      if (existing) {
+        if (isEquipped(existing->GetUUID())) {
+          response["error"] =
+              "Cannot replace equipped item; unequip in-game first.";
+          return true;
+        }
+        inventory->SetItems(slot, NULLUUID);
+        if (!existing->Delete(worldDB)) {
+          response["error"] = "Failed to delete existing item.";
+          return true;
+        }
+      } else if (op == "add") {
+        // find first empty if slot occupied was required empty — already empty
+      }
+
+      auto item = libcomp::PersistentObject::New<objects::Item>();
+      auto restr = def->GetRestriction();
+      if (restr) {
+        for (uint8_t i = 0; i < restr->GetModSlots() && i < 5; i++) {
+          item->SetModSlots((size_t)i, MOD_SLOT_NULL_EFFECT);
+        }
+      }
+      auto poss = def->GetPossession();
+      item->SetType((uint32_t)itemType);
+      item->SetStackSize((uint16_t)qty);
+      item->SetDurability((uint16_t)(poss->GetDurability() * 1000));
+      item->SetMaxDurability((int8_t)poss->GetDurability());
+      item->SetItemBox(inventory->GetUUID());
+      item->SetBoxSlot((int8_t)slot);
+      item->Register(item);
+
+      if (!item->Insert(worldDB) || !inventory->SetItems(slot, item)) {
+        response["error"] = "Failed to insert item.";
+        return true;
+      }
+    } else {
+      response["error"] = "Unknown op (use set, add, set_qty, remove).";
+      return true;
+    }
+  }
+
+  if (!inventory->Update(worldDB)) {
+    response["error"] = "Failed to save inventory.";
+    return true;
+  }
+
+  response["error"] = "Success";
+  return true;
+}
+
 bool ApiHandler::WebApp_Request(const libcomp::String& appName,
                                 const libcomp::String& method,
                                 const JsonBox::Object& request,
@@ -2986,6 +3527,22 @@ bool ApiHandler::handlePost(CivetServer* pServer,
         usernameIterator != obj.end()
             ? libcomp::String(usernameIterator->second.getString()).ToLower()
             : "";
+
+    // Website forgot-password may call recovery_email with only `email` (no
+    // username). Still need a session bucket; VerifyWebsiteResetSecret guards
+    // the handler.
+    if (session_username.IsEmpty() &&
+        ("/account/recovery_email" == method ||
+         "/account/reset_password" == method)) {
+      auto emailIt = obj.find("email");
+      if (emailIt != obj.end()) {
+        session_username =
+            libcomp::String("email:") +
+            libcomp::String(emailIt->second.getString()).ToLower();
+      } else {
+        session_username = "__website_reset__";
+      }
+    }
 
     if (!session_username.IsEmpty()) {
       // Normal API sessions are stored per username

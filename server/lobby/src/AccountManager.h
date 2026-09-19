@@ -29,6 +29,7 @@
 
 // libcomp Includes
 #include <CString.h>
+#include <Database.h>
 #include <ErrorCodes.h>
 
 // Standard C++11 Includes
@@ -322,6 +323,34 @@ class AccountManager {
    */
   bool DeleteCharacter(const std::shared_ptr<objects::Account>& account,
                        const std::shared_ptr<objects::Character>& character);
+
+  /**
+   * Remove a character UUID from the account Characters array (compact slots,
+   * restore a ticket when the last character is removed) without deleting the
+   * world character. Used by admin transfer.
+   * @param account Pointer to the account to detach from
+   * @param character Pointer to the character to detach
+   * @return true if the account was updated, false otherwise
+   */
+  bool DetachCharacterFromAccount(
+      const std::shared_ptr<objects::Account>& account,
+      const std::shared_ptr<objects::Character>& character);
+
+  /**
+   * Move an offline character from one account to another: detach source slot,
+   * attach dest slot, and rewrite Character / ItemBox / DemonBox Account refs
+   * on the world database.
+   * @param sourceAccount Account currently owning the character
+   * @param destAccount Account receiving the character
+   * @param character Character to move
+   * @param worldDB World database for the character's world
+   * @return true on success
+   */
+  bool TransferCharacter(
+      const std::shared_ptr<objects::Account>& sourceAccount,
+      const std::shared_ptr<objects::Account>& destAccount,
+      const std::shared_ptr<objects::Character>& character,
+      const std::shared_ptr<libcomp::Database>& worldDB);
 
   /**
    * Start a web-game session for the specified user who is currently playing

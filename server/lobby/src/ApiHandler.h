@@ -50,6 +50,7 @@
 
 namespace objects {
 class WebGameSession;
+class Character;
 }
 
 namespace libobjects {
@@ -183,6 +184,21 @@ class ApiHandler : public CivetHandler {
   bool Admin_DeletePromo(const JsonBox::Object& request,
                          JsonBox::Object& response,
                          const std::shared_ptr<ApiSession>& session);
+  bool Admin_RenameCharacter(const JsonBox::Object& request,
+                             JsonBox::Object& response,
+                             const std::shared_ptr<ApiSession>& session);
+  bool Admin_DeleteCharacter(const JsonBox::Object& request,
+                             JsonBox::Object& response,
+                             const std::shared_ptr<ApiSession>& session);
+  bool Admin_TransferCharacter(const JsonBox::Object& request,
+                               JsonBox::Object& response,
+                               const std::shared_ptr<ApiSession>& session);
+  bool Admin_GetCharacterInventory(const JsonBox::Object& request,
+                                   JsonBox::Object& response,
+                                   const std::shared_ptr<ApiSession>& session);
+  bool Admin_UpdateCharacterInventory(
+      const JsonBox::Object& request, JsonBox::Object& response,
+      const std::shared_ptr<ApiSession>& session);
 
   bool WebApp_Request(const libcomp::String& appName,
                       const libcomp::String& method,
@@ -217,6 +233,17 @@ class ApiHandler : public CivetHandler {
                                                JsonBox::Object& response);
   std::shared_ptr<World> GetWorld(const JsonBox::Object& obj,
                                   JsonBox::Object& response);
+
+  /// Resolve character by character_uuid or character_name (+ optional world_id).
+  bool ResolveCharacter(
+      const JsonBox::Object& request, JsonBox::Object& response,
+      std::shared_ptr<objects::Character>& character,
+      std::shared_ptr<World>& world,
+      std::shared_ptr<libcomp::Database>& worldDB);
+
+  /// True when the account has no lobby/world session (safe to mutate).
+  bool RequireAccountOffline(const libcomp::String& username,
+                             JsonBox::Object& response);
 
   bool GetWebGameSession(JsonBox::Object& response,
                          const std::shared_ptr<ApiSession>& session,

@@ -39,6 +39,8 @@
 #include <AccountLogin.h>
 #include <Character.h>
 #include <CharacterLogin.h>
+#include <DemonBox.h>
+#include <ItemBox.h>
 #include <LobbyConfig.h>
 #include <WebGameSession.h>
 
@@ -1109,10 +1111,10 @@ AccountManager::GetCharactersForDeletion(
   return deletes;
 }
 
-bool AccountManager::DeleteCharacter(
+bool AccountManager::DetachCharacterFromAccount(
     const std::shared_ptr<objects::Account>& account,
     const std::shared_ptr<objects::Character>& character) {
-  // We need to be careful when deleting characters so we
+  // We need to be careful when removing characters so we
   // do not orphan any when reindexing etc
   std::lock_guard<std::mutex> lock(mAccountLock);
 
@@ -1129,7 +1131,7 @@ bool AccountManager::DeleteCharacter(
   if (cid == MAX_CHARACTER) {
     LogAccountManagerError([&]() {
       return libcomp::String(
-                 "Attempted to delete a character no longer associated to its "
+                 "Attempted to detach a character no longer associated to its "
                  "parent account: %1\n")
           .Arg(character->GetUUID().ToString());
     });
@@ -1165,16 +1167,128 @@ bool AccountManager::DeleteCharacter(
   if (!account->Update(mServer->GetMainDatabase())) {
     LogAccountManagerError([&]() {
       return libcomp::String(
-                 "Account failed to update after character deletion: %1\n")
+                 "Account failed to update after character detach: %1\n")
           .Arg(character->GetUUID().ToString());
     });
 
     return false;
   }
 
+  return true;
+}
+
+bool AccountManager::DeleteCharacter(
+    const std::shared_ptr<objects::Account>& account,
+    const std::shared_ptr<objects::Character>& character) {
+  if (!DetachCharacterFromAccount(account, character)) {
+    return false;
+  }
+
   // Now that the account has had the character removed, send them to
   // the world to cleanup
   mServer->GetLobbySyncManager()->RemoveRecord(character, "Character");
+
+  return true;
+}
+
+bool AccountManager::TransferCharacter(
+    const std::shared_ptr<objects::Account>& sourceAccount,
+    const std::shared_ptr<objects::Account>& destAccount,
+    const std::shared_ptr<objects::Character>& character,
+    const std::shared_ptr<libcomp::Database>& worldDB) {
+  if (!sourceAccount || !destAccount || !character || !worldDB) {
+    return false;
+  }
+
+  if (sourceAccount->GetUUID() == destAccount->GetUUID()) {
+    return false;
+  }
+
+  // Ensure destination has a free character slot before mutating.
+  {
+    std::lock_guard<std::mutex> lock(mAccountLock);
+    auto characters = destAccount->GetCharacters();
+    bool hasSlot = false;
+    for (uint8_t i = 0; i < MAX_CHARACTER; i++) {
+      if (characters[i].IsNull()) {
+        hasSlot = true;
+        break;
+      }
+    }
+    if (!hasSlot) {
+      LogAccountManagerError([&]() {
+        return libcomp::String(
+                   "Transfer failed: destination account %1 has no free "
+                   "character slots\n")
+            .Arg(destAccount->GetUUID().ToString());
+      });
+      return false;
+    }
+  }
+
+  if (!DetachCharacterFromAccount(sourceAccount, character)) {
+    return false;
+  }
+
+  if (!SetCharacterOnAccount(destAccount, character)) {
+    LogAccountManagerError([&]() {
+      return libcomp::String(
+                 "Transfer failed attaching character %1 to account %2 after "
+                 "detach — character may need manual repair\n")
+          .Arg(character->GetUUID().ToString())
+          .Arg(destAccount->GetUUID().ToString());
+    });
+    return false;
+  }
+
+  auto destUUID = destAccount->GetUUID();
+  character->SetAccount(destUUID);
+
+  for (size_t i = 0; i < character->ItemBoxesCount(); i++) {
+    auto box = character->GetItemBoxes(i).Get(worldDB);
+    if (box) {
+      box->SetAccount(destUUID);
+      if (!box->Update(worldDB)) {
+        LogAccountManagerError([&]() {
+          return libcomp::String(
+                     "Transfer failed updating ItemBox account for character "
+                     "%1\n")
+              .Arg(character->GetUUID().ToString());
+        });
+        return false;
+      }
+    }
+  }
+
+  auto comp = character->GetCOMP().Get(worldDB);
+  if (comp) {
+    comp->SetAccount(destUUID);
+    if (!comp->Update(worldDB)) {
+      LogAccountManagerError([&]() {
+        return libcomp::String(
+                   "Transfer failed updating COMP DemonBox account for "
+                   "character %1\n")
+            .Arg(character->GetUUID().ToString());
+      });
+      return false;
+    }
+  }
+
+  if (!character->Update(worldDB)) {
+    LogAccountManagerError([&]() {
+      return libcomp::String(
+                 "Transfer failed updating Character.Account for %1\n")
+          .Arg(character->GetUUID().ToString());
+    });
+    return false;
+  }
+
+  LogAccountManagerDebug([&]() {
+    return libcomp::String("Transferred character '%1' from account %2 to %3\n")
+        .Arg(character->GetName())
+        .Arg(sourceAccount->GetUUID().ToString())
+        .Arg(destAccount->GetUUID().ToString());
+  });
 
   return true;
 }
