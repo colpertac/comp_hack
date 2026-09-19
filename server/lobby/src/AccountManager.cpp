@@ -1053,6 +1053,24 @@ bool AccountManager::DeleteKillTimeExceededCharacters(uint8_t worldID) {
   return true;
 }
 
+size_t AccountManager::CountOccupiedCharacterSlots(
+    const std::shared_ptr<objects::Account>& account) {
+  if (!account) {
+    return 0;
+  }
+
+  size_t count = 0;
+  for (size_t i = 0; i < account->CharactersCount(); ++i) {
+    // IsNull() = no UUID and no loaded pointer. operator bool() is wrong here:
+    // it is true only when the Character is already resident in memory.
+    if (!account->GetCharacters(i).IsNull()) {
+      ++count;
+    }
+  }
+
+  return count;
+}
+
 bool AccountManager::SetCharacterOnAccount(
     const std::shared_ptr<objects::Account>& account,
     const std::shared_ptr<objects::Character>& character) {
@@ -1152,15 +1170,8 @@ bool AccountManager::DetachCharacterFromAccount(
 
   // If there are no characters left make sure the account has a
   // character ticket.
-  int count = 0;
-
-  for (auto c : characters) {
-    if (!c.IsNull()) {
-      count++;
-    }
-  }
-
-  if (0 == count && 0 == account->GetTicketCount()) {
+  if (0 == CountOccupiedCharacterSlots(account) &&
+      0 == account->GetTicketCount()) {
     account->SetTicketCount(1);
   }
 

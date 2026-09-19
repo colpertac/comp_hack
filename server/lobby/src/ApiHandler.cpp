@@ -295,15 +295,8 @@ bool ApiHandler::Account_GetDetails(
   response["ban_reason"] = account->GetBanReason().ToUtf8();
   response["ban_initiator"] = account->GetBanInitiator().ToUtf8();
 
-  int count = 0;
-
-  for (size_t i = 0; i < account->CharactersCount(); ++i) {
-    if (account->GetCharacters(i)) {
-      count++;
-    }
-  }
-
-  response["character_count"] = count;
+  response["character_count"] =
+      (int)AccountManager::CountOccupiedCharacterSlots(account);
 
   return true;
 }
@@ -984,15 +977,8 @@ bool ApiHandler::Admin_GetAccounts(const JsonBox::Object& request,
     obj["ban_reason"] = account->GetBanReason().ToUtf8();
     obj["ban_initiator"] = account->GetBanInitiator().ToUtf8();
 
-    int count = 0;
-
-    for (size_t i = 0; i < account->CharactersCount(); ++i) {
-      if (account->GetCharacters(i)) {
-        count++;
-      }
-    }
-
-    obj["character_count"] = count;
+    obj["character_count"] =
+        (int)AccountManager::CountOccupiedCharacterSlots(account);
 
     accountObjects.push_back(obj);
   }
@@ -1047,15 +1033,8 @@ bool ApiHandler::Admin_GetAccount(const JsonBox::Object& request,
   response["ban_reason"] = account->GetBanReason().ToUtf8();
   response["ban_initiator"] = account->GetBanInitiator().ToUtf8();
 
-  int count = 0;
-
-  for (size_t i = 0; i < account->CharactersCount(); ++i) {
-    if (account->GetCharacters(i)) {
-      count++;
-    }
-  }
-
-  response["character_count"] = count;
+  response["character_count"] =
+      (int)AccountManager::CountOccupiedCharacterSlots(account);
 
   return true;
 }
@@ -1154,20 +1133,15 @@ bool ApiHandler::Admin_UpdateAccount(
     account->SetCP((uint32_t)cp);
   }
 
-  int count = 0;
-
-  for (size_t i = 0; i < account->CharactersCount(); ++i) {
-    if (account->GetCharacters(i)) {
-      count++;
-    }
-  }
+  const int occupiedSlots =
+      (int)AccountManager::CountOccupiedCharacterSlots(account);
 
   it = request.find("ticket_count");
 
   if (it != request.end()) {
     int ticket_count = it->second.getInteger();
 
-    if ((ticket_count + count) > (int)account->CharactersCount() ||
+    if ((ticket_count + occupiedSlots) > (int)account->CharactersCount() ||
         0 > ticket_count) {
       response["error"] =
           "Ticket count must be a positive integer or zero. Ticket count must "

@@ -41,6 +41,7 @@
 
 namespace objects {
 
+class Account;
 class Character;
 class WebGameSession;
 
@@ -290,6 +291,22 @@ class AccountManager {
    *  occurred
    */
   bool DeleteKillTimeExceededCharacters(uint8_t worldID);
+
+  /**
+   * Count occupied character slots on an account's Characters array.
+   *
+   * A slot is occupied when its ObjectReference is non-null (UUID present
+   * and/or Character loaded). This must NOT use operator bool() on the
+   * reference — that only reports whether the Character object is already
+   * loaded in memory, so offline accounts would incorrectly report zero.
+   *
+   * Matches create / detach / transfer slot logic elsewhere in this class.
+   *
+   * @param account Account to inspect; null returns 0.
+   * @return Number of occupied slots (0 .. CharactersCount()).
+   */
+  static size_t CountOccupiedCharacterSlots(
+      const std::shared_ptr<objects::Account>& account);
 
   /**
    * Set a character on the specified account's character array and save it
