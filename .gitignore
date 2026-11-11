@@ -9,6 +9,7 @@ binaries32/
 binaries64/
 .run/
 runtime/
+runtime.bak*/
 
 *.sublime-project
 
