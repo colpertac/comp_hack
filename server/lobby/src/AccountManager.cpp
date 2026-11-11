@@ -735,6 +735,7 @@ bool AccountManager::Logout(const libcomp::String& username) {
   cLogin->SetWorldID(-1);
   cLogin->SetChannelID(-1);
   cLogin->SetZoneID(0);
+  mPresencePos.erase(username.ToLower());
 
   // Let the account return to the lobby (if they did a logout to lobby).
   login->SetState(objects::AccountLogin::State_t::LOBBY_WAIT);
@@ -825,6 +826,7 @@ void AccountManager::EraseLogin(const libcomp::String& username,
   mAccountMap.erase(lookup);
   mWebGameSessions.erase(lookup);
   mWebGameAPISessions.erase(lookup);
+  mPresencePos.erase(lookup);
 
   if (updateDebugStatus) {
     UpdateDebugStatus();
@@ -896,6 +898,54 @@ std::shared_ptr<objects::AccountLogin> AccountManager::GetUserLogin(
 
   auto pair = mAccountMap.find(lookup);
   return pair != mAccountMap.end() ? pair->second : nullptr;
+}
+
+bool AccountManager::UpdateCharacterPresence(const libcomp::String& username,
+                                             int8_t channelID, uint32_t zoneID,
+                                             int8_t status, float x, float y,
+                                             bool hasPos) {
+  libcomp::String lookup = username.ToLower();
+
+  std::lock_guard<std::mutex> lock(mAccountLock);
+
+  auto pair = mAccountMap.find(lookup);
+  if (pair == mAccountMap.end()) {
+    return false;
+  }
+
+  auto login = pair->second;
+  auto cLogin = login ? login->GetCharacterLogin() : nullptr;
+  if (!login || !cLogin || cLogin->GetWorldID() < 0) {
+    return false;
+  }
+
+  cLogin->SetChannelID(channelID);
+  cLogin->SetZoneID(zoneID);
+  cLogin->SetStatus((objects::CharacterLogin::Status_t)status);
+
+  if (hasPos) {
+    mPresencePos[lookup] = std::make_pair(x, y);
+  } else if (zoneID == 0) {
+    mPresencePos.erase(lookup);
+  }
+
+  return true;
+}
+
+bool AccountManager::GetCharacterPresencePos(const libcomp::String& username,
+                                             float& x, float& y) {
+  libcomp::String lookup = username.ToLower();
+
+  std::lock_guard<std::mutex> lock(mAccountLock);
+
+  auto it = mPresencePos.find(lookup);
+  if (it == mPresencePos.end()) {
+    return false;
+  }
+
+  x = it->second.first;
+  y = it->second.second;
+  return true;
 }
 
 std::list<libcomp::String> AccountManager::GetUsersInWorld(int8_t world,

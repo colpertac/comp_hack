@@ -78,6 +78,7 @@
 #include <WorldSharedConfig.h>
 
 // Standard C Includes
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -3223,8 +3224,8 @@ bool ChatManager::GMCommand_Help(
            "Adds map for the player with the given ID.",
        }},
       {"online",
-       {"@online [NAME]", "Print how many players are online or check if the",
-        "character with a specific NAME is online."}},
+       {"@online [PAGE]", "Print how many players are online and a paginated",
+        "list of character names (25 per page). PAGE defaults to 1."}},
       {"penalty",
        {"@penalty [NAME]",
         "Remove all PvP penalties on the character NAME or to",
@@ -4125,53 +4126,84 @@ bool ChatManager::GMCommand_Online(
   std::list<libcomp::String> argsCopy = args;
 
   auto server = mServer.lock();
+  auto worldDB = server->GetWorldDatabase();
 
-  std::shared_ptr<objects::Character> targetCharacter;
+  static const int32_t PAGE_SIZE = 25;
 
-  libcomp::String name;
-  if (GetStringArg(name, argsCopy)) {
-    // Get location of specific character
-    targetCharacter = objects::Character::LoadCharacterByName(
-        server->GetWorldDatabase(), name);
-    if (!targetCharacter) {
-      return SendChatMessage(
-          client, ChatType_t::CHAT_SELF,
-          libcomp::String(
-              "Invalid character name supplied for online command: %1")
-              .Arg(name));
+  int32_t page = 1;
+  if (!argsCopy.empty()) {
+    if (!GetIntegerArg(page, argsCopy) || !argsCopy.empty() || page < 1) {
+      return SendChatMessage(client, ChatType_t::CHAT_SELF,
+                             "@online [PAGE] — PAGE defaults to 1 (25 names)");
+    }
+  }
+
+  std::vector<libcomp::String> names;
+  for (auto& pair : server->GetAccountManager()->GetActiveLogins()) {
+    auto login = pair.second;
+    if (!login) {
+      continue;
     }
 
-    auto login =
-        server->GetAccountManager()->GetActiveLogin(targetCharacter->GetUUID());
-
-    uint32_t zoneID = login ? login->GetZoneID() : 0;
-    if (zoneID) {
-      return SendChatMessage(
-          client, ChatType_t::CHAT_SELF,
-          libcomp::String("%1 is currently in zone %2").Arg(name).Arg(zoneID));
-    } else {
-      return SendChatMessage(
-          client, ChatType_t::CHAT_SELF,
-          libcomp::String("%1 is not currently online").Arg(name));
-    }
-  } else {
-    // Get number of current players
-    int8_t channelID = (int8_t)server->GetChannelID();
-
-    int32_t total = 0;
-    int32_t channel = 0;
-    for (auto& pair : server->GetAccountManager()->GetActiveLogins()) {
-      total++;
-      if (pair.second->GetChannelID() == channelID) {
-        channel++;
-      }
+    auto character = login->GetCharacter().Get(worldDB);
+    if (!character) {
+      continue;
     }
 
+    auto name = character->GetName();
+    if (!name.IsEmpty()) {
+      names.push_back(name);
+    }
+  }
+
+  std::sort(names.begin(), names.end(),
+            [](const libcomp::String& a, const libcomp::String& b) {
+              return a.ToLower() < b.ToLower();
+            });
+
+  const int32_t total = (int32_t)names.size();
+  const int32_t pages =
+      total == 0 ? 1 : ((total + PAGE_SIZE - 1) / PAGE_SIZE);
+
+  SendChatMessage(
+      client, ChatType_t::CHAT_SELF,
+      libcomp::String("Characters online: %1 (page %2/%3, %4/page)")
+          .Arg(total)
+          .Arg(page)
+          .Arg(pages)
+          .Arg(PAGE_SIZE));
+
+  if (total == 0) {
+    return true;
+  }
+
+  if (page > pages) {
     return SendChatMessage(
         client, ChatType_t::CHAT_SELF,
-        libcomp::String("Characters online: %1 (%2 on current channel)")
+        libcomp::String("No players on page %1 (total %2, pages %3)")
+            .Arg(page)
             .Arg(total)
-            .Arg(channel));
+            .Arg(pages));
+  }
+
+  const size_t start = (size_t)((page - 1) * PAGE_SIZE);
+  const size_t end =
+      std::min(start + (size_t)PAGE_SIZE, names.size());
+
+  static const size_t NAMES_PER_LINE = 5;
+  libcomp::String line;
+  size_t onLine = 0;
+  for (size_t i = start; i < end; ++i) {
+    if (onLine > 0) {
+      line += ", ";
+    }
+    line += names[i];
+    ++onLine;
+    if (onLine >= NAMES_PER_LINE || i + 1 == end) {
+      SendChatMessage(client, ChatType_t::CHAT_SELF, line);
+      line = "";
+      onLine = 0;
+    }
   }
 
   return true;

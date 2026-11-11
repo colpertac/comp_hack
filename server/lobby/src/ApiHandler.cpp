@@ -118,6 +118,7 @@ ApiHandler::ApiHandler(const std::shared_ptr<objects::LobbyConfig>& config,
   mParsers["/admin/kick_player"] = &ApiHandler::Admin_KickPlayer;
   mParsers["/admin/message_world"] = &ApiHandler::Admin_MessageWorld;
   mParsers["/admin/online"] = &ApiHandler::Admin_Online;
+  mParsers["/admin/list_online"] = &ApiHandler::Admin_ListOnline;
   mParsers["/admin/list_chat_logs"] = &ApiHandler::Admin_ListChatLogs;
   mParsers["/admin/list_reports"] = &ApiHandler::Admin_ListReports;
   mParsers["/admin/resolve_report"] = &ApiHandler::Admin_ResolveReport;
@@ -1528,6 +1529,105 @@ bool ApiHandler::Admin_Online(const JsonBox::Object& request,
     response["results"] = objectList;
   }
 
+  response["error"] = "Success";
+
+  return true;
+}
+
+bool ApiHandler::Admin_ListOnline(const JsonBox::Object& request,
+                                  JsonBox::Object& response,
+                                  const std::shared_ptr<ApiSession>& session) {
+  (void)request;
+  (void)session;
+
+  if (!HaveUserLevel(response, session, SVR_CONST.API_ADMIN_LVL_ONLINE)) {
+    return true;
+  }
+
+  struct PresenceRow {
+    libcomp::String account;
+    libcomp::String character;
+    int worldId;
+    int channelId;
+    int zoneId;
+    libcomp::String status;
+    float x;
+    float y;
+    bool hasPos;
+  };
+
+  std::vector<PresenceRow> rows;
+  auto lobbyDB = mServer->GetMainDatabase();
+
+  for (auto world : mServer->GetManagerConnection()->GetWorlds()) {
+    auto rWorld = world->GetRegisteredWorld();
+    auto worldDB = world->GetWorldDatabase();
+    if (!rWorld || !worldDB) {
+      continue;
+    }
+
+    auto usernames =
+        mAccountManager->GetUsersInWorld((int8_t)rWorld->GetID());
+    for (auto& username : usernames) {
+      auto login = mAccountManager->GetUserLogin(username);
+      auto cLogin = login ? login->GetCharacterLogin() : nullptr;
+      if (!login || !cLogin || cLogin->GetWorldID() < 0) {
+        continue;
+      }
+
+      libcomp::String accountName = username;
+      auto account = login->GetAccount().Get(lobbyDB);
+      if (account) {
+        accountName = account->GetUsername();
+      }
+
+      libcomp::String characterName;
+      auto character = cLogin->GetCharacter().Get(worldDB);
+      if (character) {
+        characterName = character->GetName();
+      }
+      if (characterName.IsEmpty()) {
+        continue;
+      }
+
+      PresenceRow row;
+      row.account = accountName;
+      row.character = characterName;
+      row.worldId = (int)cLogin->GetWorldID();
+      row.channelId = (int)cLogin->GetChannelID();
+      row.zoneId = (int)cLogin->GetZoneID();
+      row.status = row.zoneId > 0 ? "online" : "world";
+      row.x = 0.f;
+      row.y = 0.f;
+      row.hasPos = mAccountManager->GetCharacterPresencePos(accountName, row.x,
+                                                           row.y);
+      rows.push_back(row);
+    }
+  }
+
+  std::sort(rows.begin(), rows.end(),
+            [](const PresenceRow& a, const PresenceRow& b) {
+              return a.character.ToLower() < b.character.ToLower();
+            });
+
+  JsonBox::Array players;
+  for (auto& row : rows) {
+    JsonBox::Object obj;
+    obj["account"] = row.account.ToUtf8();
+    obj["character"] = row.character.ToUtf8();
+    obj["world_id"] = row.worldId;
+    obj["channel_id"] = row.channelId;
+    obj["zone_id"] = row.zoneId;
+    obj["status"] = row.status.ToUtf8();
+    if (row.hasPos) {
+      obj["x"] = row.x;
+      obj["y"] = row.y;
+    }
+    players.push_back(obj);
+  }
+
+  response["total"] = (int)rows.size();
+  response["players"] = players;
   response["error"] = "Success";
 
   return true;

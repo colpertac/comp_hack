@@ -1247,6 +1247,16 @@ void ChannelServer::ScheduleRecurringActions() {
       },
       this);
 
+  // Refresh lobby presence (zone + X/Y) every 5s for admin roster / Phase 18
+  mTimerManager.SchedulePeriodicEvent(
+      std::chrono::milliseconds(5000),
+      [](ChannelServer* pServer) {
+        if (pServer->GetZoneManager()) {
+          pServer->GetZoneManager()->SyncAllLobbyPresence();
+        }
+      },
+      this);
+
   // Start the tick handler
   StartGameTick();
 

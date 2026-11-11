@@ -32,6 +32,7 @@
 #include <ManagerPacket.h>
 #include <Packet.h>
 #include <PacketCodes.h>
+#include <PersistentObject.h>
 
 // object Includes
 #include <Account.h>
@@ -45,6 +46,49 @@
 #include "WorldSyncManager.h"
 
 using namespace world;
+
+namespace {
+
+void NotifyLobbyPresence(
+    const std::shared_ptr<WorldServer>& server,
+    const std::shared_ptr<objects::CharacterLogin>& cLogin, float x, float y,
+    bool hasPos) {
+  if (!server || !cLogin) {
+    return;
+  }
+
+  auto lobby = server->GetLobbyConnection();
+  if (!lobby) {
+    return;
+  }
+
+  auto character = cLogin->GetCharacter().Get(server->GetWorldDatabase());
+  if (!character) {
+    return;
+  }
+
+  auto account =
+      libcomp::PersistentObject::LoadObjectByUUID<objects::Account>(
+          server->GetLobbyDatabase(), character->GetAccount());
+  if (!account) {
+    return;
+  }
+
+  libcomp::Packet notify;
+  notify.WritePacketCode(InternalPacketCode_t::PACKET_CHARACTER_LOGIN);
+  notify.WriteString16Little(libcomp::Convert::Encoding_t::ENCODING_UTF8,
+                             account->GetUsername(), true);
+  notify.WriteS8(cLogin->GetChannelID());
+  notify.WriteU32Little(cLogin->GetZoneID());
+  notify.WriteS8(cLogin->GetStatusValue());
+  if (hasPos) {
+    notify.WriteFloat(x);
+    notify.WriteFloat(y);
+  }
+  lobby->SendPacket(notify);
+}
+
+}  // namespace
 
 bool Parsers::CharacterLogin::Parse(
     libcomp::ManagerPacket* pPacketManager,
@@ -116,11 +160,25 @@ bool Parsers::CharacterLogin::Parse(
     uint32_t zoneID = p.ReadU32Little();
     cLogin->SetZoneID(zoneID);
 
+    // Optional X/Y after zone (channel presence sync). Older channels omit it.
+    float x = 0.f;
+    float y = 0.f;
+    bool hasPos = false;
+    if (p.Left() >= 8) {
+      x = p.ReadFloat();
+      y = p.ReadFloat();
+      hasPos = true;
+    }
+
     // If the character is going from no zone to some zone, reload
     // to pick up any channel login changes
     if (zoneID && !previousZoneID) {
       cLogin->GetCharacter().Get(server->GetWorldDatabase(), true);
     }
+
+    // Lobby AccountLogin does not otherwise learn zone/position — push a
+    // presence snapshot for admin roster / Phase 18 presence APIs.
+    NotifyLobbyPresence(server, cLogin, x, y, hasPos);
   }
 
   auto member = characterManager->GetPartyMember(cLogin->GetWorldCID());

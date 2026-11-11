@@ -861,27 +861,66 @@ bool ZoneManager::EnterZone(
 
   client->FlushOutgoing();
 
-  // Tell the world that the character has changed zones
+  // Tell the world that the character has changed zones (+ position for lobby)
   auto cLogin = state->GetAccountLogin()->GetCharacterLogin();
+  bool firstZone = cLogin->GetZoneID() == 0;
+  cLogin->SetZoneID(zoneID);
+  SyncLobbyPresence(client, firstZone);
+
+  return true;
+}
+
+void ZoneManager::SyncLobbyPresence(
+    const std::shared_ptr<ChannelClientConnection>& client,
+    bool includeStatus) {
+  if (!client) {
+    return;
+  }
+
+  auto server = mServer.lock();
+  auto worldConnection = server->GetManagerConnection()->GetWorldConnection();
+  if (!worldConnection) {
+    return;
+  }
+
+  auto state = client->GetClientState();
+  auto zone = state ? state->GetZone() : nullptr;
+  auto cState = state ? state->GetCharacterState() : nullptr;
+  auto accountLogin = state ? state->GetAccountLogin() : nullptr;
+  auto cLogin = accountLogin ? accountLogin->GetCharacterLogin() : nullptr;
+  if (!zone || !cState || !cLogin || cLogin->GetWorldCID() == 0) {
+    return;
+  }
+
+  uint32_t zoneID = cLogin->GetZoneID();
+  if (!zoneID) {
+    zoneID = zone->GetDefinitionID();
+  }
+
+  cState->RefreshCurrentPosition(server->GetServerTime());
 
   libcomp::Packet request;
   request.WritePacketCode(InternalPacketCode_t::PACKET_CHARACTER_LOGIN);
   request.WriteS32Little(cLogin->GetWorldCID());
-  if (cLogin->GetZoneID() == 0) {
-    // Send first zone in info
+  if (includeStatus) {
     request.WriteU8((uint8_t)CharacterLoginStateFlag_t::CHARLOGIN_STATUS |
                     (uint8_t)CharacterLoginStateFlag_t::CHARLOGIN_ZONE);
     request.WriteS8((int8_t)cLogin->GetStatus());
   } else {
-    // Send normal zone change info
     request.WriteU8((uint8_t)CharacterLoginStateFlag_t::CHARLOGIN_ZONE);
   }
   request.WriteU32Little(zoneID);
-  cLogin->SetZoneID(zoneID);
+  request.WriteFloat(cState->GetCurrentX());
+  request.WriteFloat(cState->GetCurrentY());
 
-  server->GetManagerConnection()->GetWorldConnection()->SendPacket(request);
+  worldConnection->SendPacket(request);
+}
 
-  return true;
+void ZoneManager::SyncAllLobbyPresence() {
+  auto server = mServer.lock();
+  for (auto client : server->GetManagerConnection()->GetAllConnections()) {
+    SyncLobbyPresence(client);
+  }
 }
 
 void ZoneManager::LeaveZone(

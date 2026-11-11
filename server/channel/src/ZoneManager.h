@@ -174,6 +174,20 @@ class ZoneManager {
                  uint32_t newDynamicMapID = 0);
 
   /**
+   * Push zone + X/Y presence to the world (forwarded to lobby) for admin
+   * roster / Phase 18 presence APIs. Safe no-op if the client is not in a zone.
+   * @param includeStatus When true, also send CHARLOGIN_STATUS (first zone-in).
+   */
+  void SyncLobbyPresence(
+      const std::shared_ptr<ChannelClientConnection>& client,
+      bool includeStatus = false);
+
+  /**
+   * SyncLobbyPresence for every connected client currently in a zone.
+   */
+  void SyncAllLobbyPresence();
+
+  /**
    * Create a zone instance with access granted for the supplied CIDs
    * @param access Pointer to the access definition
    * @return 0 if it failed to create, 1 if it created local, 2 if a request

@@ -254,6 +254,28 @@ class AccountManager {
       const libcomp::String& username);
 
   /**
+   * Apply a world→lobby presence snapshot (channel/zone/status) for an
+   * account that is already logged into a world. Used by admin roster and
+   * Phase 18 presence APIs.
+   * @param username Account username
+   * @param channelID Channel ID on the world
+   * @param zoneID Zone definition ID (0 if not in a zone yet)
+   * @param status CharacterLogin status value
+   * @return true if the login was found and updated
+   */
+  bool UpdateCharacterPresence(const libcomp::String& username,
+                               int8_t channelID, uint32_t zoneID,
+                               int8_t status, float x = 0.f, float y = 0.f,
+                               bool hasPos = false);
+
+  /**
+   * Read the last presence coordinates for an account (if any).
+   * @return true when coordinates have been reported at least once
+   */
+  bool GetCharacterPresencePos(const libcomp::String& username, float& x,
+                               float& y);
+
+  /**
    * Get all users in a given world (and optionally on a specific channel).
    * @param world World to get all users from.
    * @param channel Channel in the world to get all users from. If
@@ -470,6 +492,9 @@ class AccountManager {
 
   /// List of clients connected for each machine UUID.
   std::unordered_map<libcomp::String, int32_t> mMachineUUIDs;
+
+  /// Last reported map coordinates by lowercase username (Phase 18 presence).
+  std::unordered_map<libcomp::String, std::pair<float, float>> mPresencePos;
 };
 
 }  // namespace lobby

@@ -114,6 +114,7 @@ SET(${PROJECT_NAME}_PACKETS
     src/packets/internal/AccountLogin.cpp      # 0x1004
     src/packets/internal/AccountLogout.cpp     # 0x1005
     src/packets/internal/DataSync.cpp          # 0x1007
+    src/packets/internal/CharacterLogin.cpp    # 0x1008
     src/packets/internal/WebGame.cpp           # 0x100C
 )
 
