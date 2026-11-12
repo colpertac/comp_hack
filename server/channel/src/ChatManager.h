@@ -129,49 +129,11 @@ class ChatManager {
 
   /**
    * Apply another character's look onto an online mannequin client.
-   * Used by @copylook and the loopback studio HTTP API.
+   * Used by @copylook.
    */
   libcomp::String DressStudioMannequin(
       const std::shared_ptr<channel::ChannelClientConnection>& mannequinClient,
-      const libcomp::String& sourceName, bool quiet);
-
-  /**
-   * Move an online mannequin into the portrait studio zone/position.
-   */
-  libcomp::String PoseStudioMannequin(
-      const std::shared_ptr<channel::ChannelClientConnection>& mannequinClient,
-      uint32_t zoneID, float x, float y);
-
-  /**
-   * Temporarily blank floating name + title for a clean portrait screenshot.
-   * Does not QueueUpdate (never persist blank name). Pair with RestoreStudioNameplate.
-   * Per-job hold S re-faces after SendCharacterData snaps DestinationRotation.
-   */
-  libcomp::String HideStudioNameplate(
-      const std::shared_ptr<channel::ChannelClientConnection>& mannequinClient);
-
-  /**
-   * Restore name/title after HideStudioNameplate.
-   */
-  libcomp::String RestoreStudioNameplate(
-      const std::shared_ptr<channel::ChannelClientConnection>& mannequinClient);
-
-  /**
-   * Resolve studio mannequin by account username first (vam/vaf), then
-   * character name. Survives temporary blank display names.
-   */
-  libcomp::String ResolveStudioMannequinClient(
-      const libcomp::String& mannequin,
-      std::shared_ptr<channel::ChannelClientConnection>& outClient);
-
-  /**
-   * If the mannequin account's character Name is blank/" ", restore the
-   * expected studio name (vam1→vam, vaf1→vaf) and persist. Works online
-   * (RAM + packets) or offline (world DB).
-   */
-  libcomp::String EnsureStudioMannequinName(
-      const libcomp::String& mannequin, bool& outRepaired,
-      libcomp::String& outName);
+      const libcomp::String& sourceName);
 
   /**
    * Resolve character name → Character / Account / online client.

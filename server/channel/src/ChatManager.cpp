@@ -85,7 +85,6 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
-#include <mutex>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -106,37 +105,6 @@
 using namespace channel;
 
 namespace {
-
-struct StudioNameplateBackup {
-  libcomp::String name;
-  std::array<int16_t, 65> titles{};
-  uint8_t currentTitle = 0;
-  bool prioritized = false;
-};
-
-std::mutex gStudioNameplateMutex;
-std::unordered_map<std::string, StudioNameplateBackup> gStudioNameplateBackups;
-
-std::string StudioCharKey(const std::shared_ptr<objects::Character>& c) {
-  return c ? c->GetUUID().ToString() : "";
-}
-
-void CopyTitlesOut(const std::shared_ptr<objects::Character>& c,
-                   std::array<int16_t, 65>& out) {
-  auto src = c->GetCustomTitles();
-  for (size_t i = 0; i < out.size() && i < src.size(); ++i) {
-    out[i] = src[i];
-  }
-}
-
-void CopyTitlesIn(const std::shared_ptr<objects::Character>& c,
-                  const std::array<int16_t, 65>& in) {
-  auto titles = c->GetCustomTitles();
-  for (size_t i = 0; i < titles.size() && i < in.size(); ++i) {
-    titles[i] = in[i];
-  }
-  c->SetCustomTitles(titles);
-}
 
 struct DungeonQAEntry {
   uint32_t id = 0;
@@ -1236,7 +1204,7 @@ bool ChatManager::GMCommand_CopyLook(
                            "Usage: @copylook NAME");
   }
 
-  auto err = DressStudioMannequin(client, srcName, false);
+  auto err = DressStudioMannequin(client, srcName);
   if (!err.IsEmpty()) {
     return SendChatMessage(client, ChatType_t::CHAT_SELF, err);
   }
@@ -1245,7 +1213,7 @@ bool ChatManager::GMCommand_CopyLook(
 
 libcomp::String ChatManager::DressStudioMannequin(
     const std::shared_ptr<channel::ChannelClientConnection>& client,
-    const libcomp::String& sourceName, bool quiet) {
+    const libcomp::String& sourceName) {
   auto server = mServer.lock();
   if (!server || !client) {
     return "dress failed: no server/client";
@@ -1396,31 +1364,29 @@ libcomp::String ChatManager::DressStudioMannequin(
     server->GetZoneManager()->ShowEntityToZone(zone, cState->GetEntityID());
   }
 
-  if (!quiet) {
-    int16_t titlePart = -1;
-    size_t titleIdx =
-        (size_t)(dest->GetCurrentTitle() * MAX_TITLE_PARTS);
-    auto titles = dest->GetCustomTitles();
-    if (titleIdx < titles.size()) {
-      titlePart = titles[titleIdx];
-    }
-    SendChatMessage(
-        client, ChatType_t::CHAT_SELF,
-        libcomp::String("@copylook %1 → %2 (%3): skin=%4 hair=%5/%6 face=%7 "
-                        "eye=%8/%9/%10 title=%11 (slot %12)")
-            .Arg(source->GetName())
-            .Arg(dest->GetName())
-            .Arg(srcKind)
-            .Arg(dest->GetSkinType())
-            .Arg(dest->GetHairType())
-            .Arg(dest->GetHairColor())
-            .Arg(dest->GetFaceType())
-            .Arg(dest->GetEyeType())
-            .Arg(dest->GetLeftEyeColor())
-            .Arg(dest->GetRightEyeColor())
-            .Arg(titlePart)
-            .Arg(dest->GetCurrentTitle()));
+  int16_t titlePart = -1;
+  size_t titleIdx =
+      (size_t)(dest->GetCurrentTitle() * MAX_TITLE_PARTS);
+  auto titles = dest->GetCustomTitles();
+  if (titleIdx < titles.size()) {
+    titlePart = titles[titleIdx];
   }
+  SendChatMessage(
+      client, ChatType_t::CHAT_SELF,
+      libcomp::String("@copylook %1 → %2 (%3): skin=%4 hair=%5/%6 face=%7 "
+                      "eye=%8/%9/%10 title=%11 (slot %12)")
+          .Arg(source->GetName())
+          .Arg(dest->GetName())
+          .Arg(srcKind)
+          .Arg(dest->GetSkinType())
+          .Arg(dest->GetHairType())
+          .Arg(dest->GetHairColor())
+          .Arg(dest->GetFaceType())
+          .Arg(dest->GetEyeType())
+          .Arg(dest->GetLeftEyeColor())
+          .Arg(dest->GetRightEyeColor())
+          .Arg(titlePart)
+          .Arg(dest->GetCurrentTitle()));
 
   bool anyVA = false;
   for (uint8_t i = 0; i <= MAX_VA_INDEX; i++) {
@@ -1430,365 +1396,17 @@ libcomp::String ChatManager::DressStudioMannequin(
     }
   }
   if (!anyVA) {
-    if (!quiet) {
-      SendChatMessage(client, ChatType_t::CHAT_SELF,
-                      "@copylook: source has no VA — falling back to "
-                      "@copygear for real EquippedItems.");
-    }
+    SendChatMessage(client, ChatType_t::CHAT_SELF,
+                    "@copylook: source has no VA — falling back to "
+                    "@copygear for real EquippedItems.");
     CopyStudioGear(client, source);
   } else {
     EquipStudioDummyWeapon(client, true);
   }
 
-  if (!quiet) {
-    SendChatMessage(client, ChatType_t::CHAT_SELF,
-                    "@copylook applied (RAM + packets). Run on the "
-                    "mannequin, not live cat/catm.");
-  }
-  return "";
-}
-
-libcomp::String ChatManager::PoseStudioMannequin(
-    const std::shared_ptr<channel::ChannelClientConnection>& client,
-    uint32_t zoneID, float x, float y) {
-  auto server = mServer.lock();
-  if (!server || !client) {
-    return "pose failed: no server/client";
-  }
-
-  auto zoneManager = server->GetZoneManager();
-  auto zoneData = server->GetServerDataManager()->GetZoneData(zoneID, 0);
-  if (!zoneData) {
-    return libcomp::String("pose failed: invalid zone %1").Arg(zoneID);
-  }
-
-  float rotation = zoneData->GetStartingRotation();
-  if (!zoneManager->EnterZone(client, zoneID, 0, x, y, rotation, true)) {
-    return libcomp::String("pose failed: EnterZone %1").Arg(zoneID);
-  }
-
-  auto state = client->GetClientState();
-  auto cState = state ? state->GetCharacterState() : nullptr;
-  if (cState) {
-    zoneManager->Warp(client, cState, x, y, rotation);
-    auto dState = state->GetDemonState();
-    if (dState && dState->GetEntity()) {
-      zoneManager->Warp(client, dState, x, y, rotation);
-    }
-  }
-  client->FlushOutgoing();
-  return "";
-}
-
-libcomp::String ChatManager::HideStudioNameplate(
-    const std::shared_ptr<channel::ChannelClientConnection>& client) {
-  auto server = mServer.lock();
-  if (!server || !client) {
-    return "nameplate hide failed: no server/client";
-  }
-
-  auto state = client->GetClientState();
-  auto cState = state ? state->GetCharacterState() : nullptr;
-  auto character = cState ? cState->GetEntity() : nullptr;
-  if (!character) {
-    return "nameplate hide failed: no character";
-  }
-
-  auto key = StudioCharKey(character);
-  if (key.empty()) {
-    return "nameplate hide failed: no uuid";
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(gStudioNameplateMutex);
-    // Keep first backup so nested hide does not clobber the real name.
-    if (gStudioNameplateBackups.find(key) == gStudioNameplateBackups.end()) {
-      StudioNameplateBackup backup;
-      backup.name = character->GetName();
-      CopyTitlesOut(character, backup.titles);
-      backup.currentTitle = character->GetCurrentTitle();
-      backup.prioritized = character->GetTitlePrioritized();
-      gStudioNameplateBackups[key] = backup;
-    }
-  }
-
-  // Single space: empty names can break client layout; still reads blank.
-  character->SetName(" ");
-  {
-    auto titles = character->GetCustomTitles();
-    for (size_t i = 0; i < titles.size(); ++i) {
-      titles[i] = -1;
-    }
-    character->SetCustomTitles(titles);
-  }
-  character->SetCurrentTitle(0);
-  character->SetTitlePrioritized(false);
-
-  // Never QueueUpdate while faked — blank name must not hit world DB.
-  auto characterManager = server->GetCharacterManager();
-  characterManager->SendCharacterData(client);
-  characterManager->SendCharacterTitle(client, true);
-  auto zone = cState->GetZone();
-  if (zone) {
-    auto others = server->GetZoneManager()->GetZoneConnections(client, false);
-    if (!others.empty()) {
-      characterManager->SendOtherCharacterData(others, state);
-    }
-    // Re-show so the client rebuilds the overhead plate from fresh data.
-    server->GetZoneManager()->ShowEntityToZone(zone, cState->GetEntityID());
-  }
-  client->FlushOutgoing();
-
-  // Put the real name/titles back in RAM immediately. The client already
-  // applied the blank plate from the packets above; leaving " " in the
-  // Character object lets logout persist a blank name (breaks char select
-  // and name-based studio lookup). Keep the backup so Restore can re-send.
-  {
-    std::lock_guard<std::mutex> lock(gStudioNameplateMutex);
-    auto it = gStudioNameplateBackups.find(key);
-    if (it != gStudioNameplateBackups.end()) {
-      character->SetName(it->second.name);
-      CopyTitlesIn(character, it->second.titles);
-      character->SetCurrentTitle(it->second.currentTitle);
-      character->SetTitlePrioritized(it->second.prioritized);
-    }
-  }
-  return "";
-}
-
-libcomp::String ChatManager::RestoreStudioNameplate(
-    const std::shared_ptr<channel::ChannelClientConnection>& client) {
-  auto server = mServer.lock();
-  if (!server || !client) {
-    return "nameplate restore failed: no server/client";
-  }
-
-  auto state = client->GetClientState();
-  auto cState = state ? state->GetCharacterState() : nullptr;
-  auto character = cState ? cState->GetEntity() : nullptr;
-  if (!character) {
-    return "nameplate restore failed: no character";
-  }
-
-  auto key = StudioCharKey(character);
-  StudioNameplateBackup backup;
-  {
-    std::lock_guard<std::mutex> lock(gStudioNameplateMutex);
-    auto it = gStudioNameplateBackups.find(key);
-    if (it == gStudioNameplateBackups.end()) {
-      return "nameplate restore failed: nothing to restore";
-    }
-    backup = it->second;
-    gStudioNameplateBackups.erase(it);
-  }
-
-  character->SetName(backup.name);
-  CopyTitlesIn(character, backup.titles);
-  character->SetCurrentTitle(backup.currentTitle);
-  character->SetTitlePrioritized(backup.prioritized);
-
-  auto characterManager = server->GetCharacterManager();
-  characterManager->SendCharacterData(client);
-  characterManager->SendCharacterTitle(client, true);
-  auto zone = cState->GetZone();
-  if (zone) {
-    auto others = server->GetZoneManager()->GetZoneConnections(client, false);
-    if (!others.empty()) {
-      characterManager->SendOtherCharacterData(others, state);
-    }
-    server->GetZoneManager()->ShowEntityToZone(zone, cState->GetEntityID());
-  }
-  // Persist real name (+ titles from last dress) so a crash mid-job is safe.
-  server->GetWorldDatabase()->QueueUpdate(character, state->GetAccountUID());
-  client->FlushOutgoing();
-  return "";
-}
-
-
-namespace {
-
-bool StudioNameIsBlank(const libcomp::String& name) {
-  return name.Trimmed().IsEmpty();
-}
-
-libcomp::String ExpectedStudioCharName(const libcomp::String& mannequin) {
-  auto a = mannequin.ToLower();
-  if (a == "vam1" || a == "vam") {
-    return "vam";
-  }
-  if (a == "vaf1" || a == "vaf") {
-    return "vaf";
-  }
-  return "";
-}
-
-std::vector<libcomp::String> StudioAccountAliases(
-    const libcomp::String& mannequin) {
-  auto a = mannequin.ToLower();
-  if (a == "vam1" || a == "vam") {
-    return {"vam1", "vam"};
-  }
-  if (a == "vaf1" || a == "vaf") {
-    return {"vaf1", "vaf"};
-  }
-  return {mannequin};
-}
-
-}  // namespace
-
-libcomp::String ChatManager::ResolveStudioMannequinClient(
-    const libcomp::String& mannequin,
-    std::shared_ptr<channel::ChannelClientConnection>& outClient) {
-  outClient = nullptr;
-  auto server = mServer.lock();
-  if (!server || mannequin.IsEmpty()) {
-    return "mannequin resolve failed: no server/name";
-  }
-
-  // Prefer account username — mannequin accounts are vam/vaf; character Name
-  // must not be required (blank-name hide used to break name lookup).
-  for (const auto& alias : StudioAccountAliases(mannequin)) {
-    auto byAccount =
-        server->GetManagerConnection()->GetClientConnection(alias);
-    if (byAccount) {
-      auto state = byAccount->GetClientState();
-      auto cState = state ? state->GetCharacterState() : nullptr;
-      if (cState && cState->GetEntity()) {
-        outClient = byAccount;
-        return "";
-      }
-    }
-  }
-
-  libcomp::String name = mannequin;
-  std::shared_ptr<objects::Character> ch;
-  std::shared_ptr<objects::Account> ac;
-  std::shared_ptr<ChannelClientConnection> byChar;
-  if (GetTargetCharacterAccount(name, true, ch, ac, byChar) && byChar) {
-    outClient = byChar;
-    return "";
-  }
-
-  // Try expected char name (vam/vaf) when account alias lookup failed.
-  auto expected = ExpectedStudioCharName(mannequin);
-  if (!expected.IsEmpty() && expected != mannequin) {
-    libcomp::String tryName = expected;
-    if (GetTargetCharacterAccount(tryName, true, ch, ac, byChar) && byChar) {
-      outClient = byChar;
-      return "";
-    }
-  }
-
-  return libcomp::String("mannequin offline: %1").Arg(mannequin);
-}
-
-libcomp::String ChatManager::EnsureStudioMannequinName(
-    const libcomp::String& mannequin, bool& outRepaired,
-    libcomp::String& outName) {
-  outRepaired = false;
-  outName = "";
-  auto server = mServer.lock();
-  if (!server || mannequin.IsEmpty()) {
-    return "ensure-name failed: no server/name";
-  }
-
-  auto expected = ExpectedStudioCharName(mannequin);
-  if (expected.IsEmpty()) {
-    return libcomp::String("ensure-name failed: unknown mannequin %1")
-        .Arg(mannequin);
-  }
-
-  // Online path: fix RAM + persist + refresh clients.
-  std::shared_ptr<ChannelClientConnection> client;
-  auto resolveErr = ResolveStudioMannequinClient(mannequin, client);
-  if (resolveErr.IsEmpty() && client) {
-    auto state = client->GetClientState();
-    auto cState = state ? state->GetCharacterState() : nullptr;
-    auto character = cState ? cState->GetEntity() : nullptr;
-    if (!character) {
-      return "ensure-name failed: no character";
-    }
-    outName = character->GetName();
-    if (!StudioNameIsBlank(outName)) {
-      return "";
-    }
-    character->SetName(expected);
-    outName = expected;
-    outRepaired = true;
-    auto characterManager = server->GetCharacterManager();
-    characterManager->SendCharacterData(client);
-    auto zone = cState->GetZone();
-    if (zone) {
-      auto others =
-          server->GetZoneManager()->GetZoneConnections(client, false);
-      if (!others.empty()) {
-        characterManager->SendOtherCharacterData(others, state);
-      }
-      server->GetZoneManager()->ShowEntityToZone(zone, cState->GetEntityID());
-    }
-    server->GetWorldDatabase()->QueueUpdate(character, state->GetAccountUID());
-    client->FlushOutgoing();
-    LogGeneralInfo([&]() {
-      return libcomp::String(
-                 "Studio ensure-name: repaired online %1 → \"%2\"\n")
-          .Arg(mannequin)
-          .Arg(expected);
-    });
-    return "";
-  }
-
-  // Offline path: load account's only character from lobby + world DB.
-  auto lobbyDB = server->GetLobbyDatabase();
-  auto worldDB = server->GetWorldDatabase();
-  if (!lobbyDB || !worldDB) {
-    return "ensure-name failed: no database";
-  }
-
-  std::shared_ptr<objects::Account> account;
-  for (const auto& alias : StudioAccountAliases(mannequin)) {
-    account = objects::Account::LoadAccountByUsername(lobbyDB, alias);
-    if (account) {
-      break;
-    }
-  }
-  if (!account) {
-    return libcomp::String("ensure-name failed: account not found: %1")
-        .Arg(mannequin);
-  }
-
-  std::shared_ptr<objects::Character> character;
-  for (auto cref : account->GetCharacters()) {
-    if (cref.IsNull()) {
-      continue;
-    }
-    auto loaded =
-        libcomp::PersistentObject::LoadObjectByUUID<objects::Character>(
-            worldDB, cref.GetUUID(), true);
-    if (loaded) {
-      character = loaded;
-      break;
-    }
-  }
-  if (!character) {
-    return libcomp::String("ensure-name failed: no character on %1")
-        .Arg(mannequin);
-  }
-
-  outName = character->GetName();
-  if (!StudioNameIsBlank(outName)) {
-    return "";
-  }
-
-  character->SetName(expected);
-  outName = expected;
-  outRepaired = true;
-  worldDB->QueueUpdate(character, account->GetUUID());
-  LogGeneralInfo([&]() {
-    return libcomp::String(
-               "Studio ensure-name: repaired offline %1 → \"%2\"\n")
-        .Arg(mannequin)
-        .Arg(expected);
-  });
+  SendChatMessage(client, ChatType_t::CHAT_SELF,
+                  "@copylook applied (RAM + packets). Run on the "
+                  "mannequin, not live cat/catm.");
   return "";
 }
 

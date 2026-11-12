@@ -103,7 +103,8 @@ int main(int argc, const char *argv[])
     return EXIT_FAILURE;
   }
 
-  // Optional studio HTTP for portrait worker (0 = disabled).
+  // Optional token-auth HTTP for the website (0 = disabled):
+  // /studio/health (status probe) and /armory/stats (live stats).
   // Binds 0.0.0.0 so homelab/LAN can reach it; auth is StudioToken.
   CivetServer* pStudioServer = nullptr;
   channel::StudioHandler* pStudioHandler = nullptr;
@@ -122,17 +123,11 @@ int main(int argc, const char *argv[])
           pStudioHandler = new channel::StudioHandler(chConfig, server);
           pStudioServer = new CivetServer(options);
           pStudioServer->addHandler("/studio/health", pStudioHandler);
-          pStudioServer->addHandler("/studio/dress", pStudioHandler);
-          pStudioServer->addHandler("/studio/pose", pStudioHandler);
-          pStudioServer->addHandler("/studio/nameplate", pStudioHandler);
-          pStudioServer->addHandler("/studio/ensure-name", pStudioHandler);
           pStudioServer->addHandler("/armory/stats", pStudioHandler);
           LogGeneralInfo([&]() {
             return libcomp::String(
                        "Studio API listening on 0.0.0.0:%1 "
-                       "(/studio/health, /studio/dress, /studio/pose, "
-                       "/studio/nameplate, /studio/ensure-name, "
-                       "/armory/stats)\n")
+                       "(/studio/health, /armory/stats)\n")
                 .Arg(studioPort);
           });
         } catch (const CivetException& e) {

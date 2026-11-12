@@ -2,7 +2,7 @@
  * @file server/channel/src/StudioHandler.h
  * @ingroup channel
  *
- * @brief HTTP API for portrait studio mannequin dress/pose (token-auth).
+ * @brief Token-auth HTTP API for /studio/health and /armory/stats.
  *
  * This file is part of the Channel Server (channel).
  *
@@ -20,9 +20,6 @@
 // civetweb Includes
 #include <CivetServer.h>
 
-// JsonBox Includes
-#include <JsonBox.h>
-
 // libcomp Includes
 #include <CString.h>
 
@@ -38,9 +35,8 @@ namespace channel {
 class ChannelServer;
 
 /**
- * Loopback Civet handler for /studio/health, /studio/dress, /studio/pose,
- * /studio/nameplate, /studio/ensure-name.
- * Bind only to 127.0.0.1; require X-Studio-Token matching ChannelConfig.
+ * Civet handler for GET /studio/health (status probe) and GET /armory/stats
+ * (live character stats). Requires X-Studio-Token matching ChannelConfig.
  */
 class StudioHandler : public CivetHandler {
  public:
@@ -51,24 +47,11 @@ class StudioHandler : public CivetHandler {
 
   virtual bool handleGet(CivetServer* pServer, struct mg_connection* pConnection);
 
-  virtual bool handlePost(CivetServer* pServer,
-                          struct mg_connection* pConnection);
-
  private:
   bool Authorize(struct mg_connection* pConnection) const;
 
   void ReplyJson(struct mg_connection* pConnection, int status,
                  const libcomp::String& jsonBody) const;
-
-  bool ReadJsonBody(struct mg_connection* pConnection, JsonBox::Object& outObj);
-
-  bool HandleDress(struct mg_connection* pConnection);
-
-  bool HandlePose(struct mg_connection* pConnection);
-
-  bool HandleNameplate(struct mg_connection* pConnection);
-
-  bool HandleEnsureName(struct mg_connection* pConnection);
 
   bool HandleArmoryStats(struct mg_connection* pConnection,
                          const struct mg_request_info* info);
